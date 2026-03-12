@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Automata</string>
+    <string name="accessibility_service_description">Automata uses accessibility to automate ride booking apps (PickMe, Uber) to compare prices and book the best ride for you.</string>
 </resources>

@@ -30,11 +30,19 @@ fun AutomataNavGraph(
     NavHost(navController = navController, startDestination = Routes.DASHBOARD) {
         composable(Routes.DASHBOARD) {
             val taskConfigs by viewModel.taskConfigs.collectAsState()
+            val automationState by viewModel.automationState.collectAsState()
+            val dumpCountdown by viewModel.dumpCountdown.collectAsState()
             DashboardScreen(
                 taskConfigs = taskConfigs,
+                automationState = automationState,
+                dumpCountdown = dumpCountdown,
                 onAddTask = { navController.navigate(Routes.NEW_TASK) },
                 onEditTask = { id -> navController.navigate(Routes.editTask(id)) },
-                onGoTask = { /* Phase 2+: launch automation */ },
+                onGoTask = { config -> viewModel.runAutomation(config) },
+                onAbort = { viewModel.abortAutomation() },
+                onClearResult = { viewModel.clearResult() },
+                onEnableAccessibility = { viewModel.openAccessibilitySettings() },
+                onDumpUi = { viewModel.dumpCurrentUi() },
                 onSettingsClick = { navController.navigate(Routes.SETTINGS) }
             )
         }

@@ -1,12 +1,20 @@
 package com.jayathu.automata.ui
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.jayathu.automata.data.db.AutomataDatabase
 import com.jayathu.automata.data.model.SavedLocation
 import com.jayathu.automata.data.model.TaskConfig
 import com.jayathu.automata.data.repository.AutomataRepository
+import com.jayathu.automata.engine.AutomationEngine
+import com.jayathu.automata.engine.AutomationResult
+import com.jayathu.automata.engine.AutomationState
+import com.jayathu.automata.notification.AutomationNotificationManager
+import com.jayathu.automata.engine.UiInspector
+import com.jayathu.automata.scripts.RideOrchestrator
+import com.jayathu.automata.service.AutomataAccessibilityService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -14,11 +22,24 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+data class AutomationUiState(
+    val isRunning: Boolean = false,
+    val currentStep: String = "",
+    val result: AutomationResult? = null,
+    val accessibilityEnabled: Boolean = false
+)
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
+
+    companion object {
+        private const val TAG = "MainViewModel"
+    }
 
     private val repository = AutomataRepository(
         AutomataDatabase.getInstance(application)
     )
+
+    private val notificationManager = AutomationNotificationManager(application)
 
     val taskConfigs: StateFlow<List<TaskConfig>> = repository.getAllTaskConfigs()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -28,6 +49,156 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _editingConfig = MutableStateFlow<TaskConfig?>(null)
     val editingConfig: StateFlow<TaskConfig?> = _editingConfig.asStateFlow()
+
+    private val _automationState = MutableStateFlow(AutomationUiState())
+    val automationState: StateFlow<AutomationUiState> = _automationState.asStateFlow()
+
+    init {
+        // Observe accessibility service state changes for notification updates
+        viewModelScope.launch {
+            AutomataAccessibilityService.instance.collect { service ->
+                _automationState.value = _automationState.value.copy(
+                    accessibilityEnabled = service != null
+                )
+                service?.getEngine()?.state?.collect { engineState ->
+                    notificationManager.updateFromState(engineState)
+                    _automationState.value = _automationState.value.copy(
+                        currentStep = when (engineState) {
+                            is AutomationState.Running -> engineState.stepName
+                            is AutomationState.WaitingForUI -> engineState.stepName
+                            is AutomationState.StepComplete -> engineState.stepName
+                            is AutomationState.Error -> "Error: ${engineState.reason}"
+                            is AutomationState.Done -> "Complete"
+                            is AutomationState.Aborted -> "Aborted"
+                            is AutomationState.Idle -> ""
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    fun runAutomation(config: TaskConfig) {
+        if (_automationState.value.isRunning) {
+            Log.w(TAG, "Automation already running")
+            return
+        }
+
+        val service = AutomataAccessibilityService.instance.value
+        if (service == null) {
+            Log.w(TAG, "Accessibility service not enabled")
+            _automationState.value = _automationState.value.copy(
+                result = AutomationResult.Failed("", "Accessibility service not enabled. Enable it in Settings > Accessibility > Automata.", emptyMap())
+            )
+            return
+        }
+
+        val engine = service.getEngine() ?: return
+        val context = getApplication<Application>()
+
+        // Pre-flight validation
+        if (config.destinationAddress.isBlank()) {
+            _automationState.value = _automationState.value.copy(
+                result = AutomationResult.Failed("", "Destination address is empty. Edit the task to add a destination.", emptyMap())
+            )
+            return
+        }
+
+        if (!config.enablePickMe && !config.enableUber) {
+            _automationState.value = _automationState.value.copy(
+                result = AutomationResult.Failed("", "No apps enabled for this task. Enable at least one app.", emptyMap())
+            )
+            return
+        }
+
+        // Check if enabled apps are installed
+        val errors = mutableListOf<String>()
+        if (config.enablePickMe && !AutomationEngine.isAppInstalled(context, com.jayathu.automata.data.model.RideApp.PICKME.packageName)) {
+            errors.add("PickMe is not installed")
+        }
+        if (config.enableUber && !AutomationEngine.isAppInstalled(context, com.jayathu.automata.data.model.RideApp.UBER.packageName)) {
+            errors.add("Uber is not installed")
+        }
+        if (errors.isNotEmpty()) {
+            _automationState.value = _automationState.value.copy(
+                result = AutomationResult.Failed("", errors.joinToString(". ") + ".", emptyMap())
+            )
+            return
+        }
+
+        _automationState.value = _automationState.value.copy(
+            isRunning = true,
+            result = null,
+            currentStep = "Starting..."
+        )
+
+        val orchestrator = RideOrchestrator(context)
+        val steps = orchestrator.buildSteps(config)
+
+        engine.runAutomation(steps) { result ->
+            Log.i(TAG, "Automation result: $result")
+            _automationState.value = _automationState.value.copy(
+                isRunning = false,
+                result = result
+            )
+        }
+    }
+
+    fun abortAutomation() {
+        val service = AutomataAccessibilityService.instance.value ?: return
+        service.getEngine()?.abort()
+        _automationState.value = _automationState.value.copy(
+            isRunning = false,
+            result = AutomationResult.Aborted
+        )
+    }
+
+    fun clearResult() {
+        _automationState.value = _automationState.value.copy(result = null)
+    }
+
+    fun checkAccessibility(): Boolean {
+        val context = getApplication<Application>()
+        val enabled = AutomationEngine.isAccessibilityEnabled(context)
+        _automationState.value = _automationState.value.copy(accessibilityEnabled = enabled)
+        return enabled
+    }
+
+    fun openAccessibilitySettings() {
+        AutomationEngine.openAccessibilitySettings(getApplication())
+    }
+
+    private val _dumpCountdown = MutableStateFlow(-1)
+    val dumpCountdown: StateFlow<Int> = _dumpCountdown.asStateFlow()
+
+    fun dumpCurrentUi() {
+        val service = AutomataAccessibilityService.instance.value
+        if (service == null) {
+            Log.w(TAG, "Cannot dump UI: accessibility service not enabled")
+            return
+        }
+
+        viewModelScope.launch {
+            // 5-second countdown so user can switch to target app
+            for (i in 5 downTo 1) {
+                _dumpCountdown.value = i
+                Log.i(TAG, "UI dump in $i seconds... Switch to the target app now!")
+                kotlinx.coroutines.delay(1000)
+            }
+            _dumpCountdown.value = 0
+
+            val root = service.getRootNode()
+            if (root == null) {
+                Log.w(TAG, "Cannot dump UI: no root node available")
+            } else {
+                Log.i(TAG, "Dumping UI tree now")
+                UiInspector.dumpCurrentScreen(root)
+            }
+
+            kotlinx.coroutines.delay(500)
+            _dumpCountdown.value = -1
+        }
+    }
 
     fun loadTaskConfig(id: Long) {
         viewModelScope.launch {
