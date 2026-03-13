@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.asStateFlow
 data class OrchestratorResult(
     val pickMePrice: Double? = null,
     val uberPrice: Double? = null,
+    val pickMeEta: Int? = null,
+    val uberEta: Int? = null,
     val winner: RideApp? = null,
     val error: String? = null
 )
@@ -36,6 +38,8 @@ class RideOrchestrator(private val context: Context) {
      * 3. Re-opens the winning app and books the ride
      */
     fun buildSteps(config: TaskConfig): List<AutomationStep> {
+        Log.i(TAG, "Building steps: enablePickMe=${config.enablePickMe}, enableUber=${config.enableUber}, mode=${config.decisionMode}")
+
         val steps = mutableListOf<AutomationStep>()
 
         val pickup = config.pickupAddress
@@ -90,18 +94,45 @@ class RideOrchestrator(private val context: Context) {
         app: RideApp,
         bookingSteps: List<AutomationStep>
     ): List<AutomationStep> {
-        return bookingSteps.map { step ->
+        // Shared flag so waitConditions know whether to use original condition or skip.
+        // The "gate" step below sets this before any booking step's waitCondition runs.
+        val isWinner = object { @Volatile var checked = false; @Volatile var value = false }
+
+        val gateStep = AutomationStep(
+            name = "Check winner: ${app.displayName}",
+            waitCondition = { true },
+            timeoutMs = 2_000,
+            delayAfterMs = 0,
+            action = { _, stepContext ->
+                val winner = stepContext.collectedData["winner"]
+                isWinner.checked = true
+                isWinner.value = (winner == app.displayName)
+                if (isWinner.value) {
+                    Log.i(TAG, "${app.displayName} is the winner — proceeding with booking")
+                    StepResult.Success
+                } else {
+                    Log.i(TAG, "${app.displayName} is NOT the winner ($winner) — skipping all booking steps")
+                    StepResult.Skip("Not the winner")
+                }
+            }
+        )
+
+        val wrappedSteps = bookingSteps.map { step ->
             AutomationStep(
                 name = step.name,
-                waitCondition = step.waitCondition,
+                waitCondition = { root ->
+                    if (isWinner.checked && !isWinner.value) {
+                        true // Not the winner — pass through so action can skip
+                    } else {
+                        step.waitCondition(root) // Winner — use original wait
+                    }
+                },
                 timeoutMs = step.timeoutMs,
                 delayAfterMs = step.delayAfterMs,
                 delayBeforeMs = step.delayBeforeMs,
                 maxRetries = step.maxRetries,
                 action = { root, stepContext ->
-                    val winner = stepContext.collectedData["winner"]
-                    if (winner != app.displayName) {
-                        Log.i(TAG, "Skipping '${step.name}' — winner is $winner, not ${app.displayName}")
+                    if (isWinner.checked && !isWinner.value) {
                         StepResult.Skip("Not the winner")
                     } else {
                         step.action(root, stepContext)
@@ -109,6 +140,8 @@ class RideOrchestrator(private val context: Context) {
                 }
             )
         }
+
+        return listOf(gateStep) + wrappedSteps
     }
 
     /**
@@ -165,17 +198,34 @@ class RideOrchestrator(private val context: Context) {
         action = { _, stepContext ->
             val pickMeRaw = stepContext.collectedData["pickme_price"]
             val uberRaw = stepContext.collectedData["uber_price"]
+            val pickMeEtaRaw = stepContext.collectedData["pickme_eta"]
+            val uberEtaRaw = stepContext.collectedData["uber_eta"]
 
             val pickMePrice = pickMeRaw?.toDoubleOrNull()
             val uberPrice = uberRaw?.toDoubleOrNull()
+            val pickMeEta = pickMeEtaRaw?.toIntOrNull()
+            val uberEta = uberEtaRaw?.toIntOrNull()
 
             Log.i(TAG, "Price comparison - PickMe: $pickMePrice, Uber: $uberPrice")
+            Log.i(TAG, "ETA comparison - PickMe: ${pickMeEta ?: "N/A"} min, Uber: ${uberEta ?: "N/A"} min")
 
             val winner = when {
                 pickMePrice != null && uberPrice != null -> {
                     when (decisionMode) {
                         DecisionMode.CHEAPEST -> if (pickMePrice <= uberPrice) RideApp.PICKME else RideApp.UBER
-                        DecisionMode.FASTEST -> RideApp.PICKME // Default to PickMe for fastest
+                        DecisionMode.FASTEST -> {
+                            when {
+                                pickMeEta != null && uberEta != null ->
+                                    if (pickMeEta <= uberEta) RideApp.PICKME else RideApp.UBER
+                                pickMeEta != null -> RideApp.PICKME
+                                uberEta != null -> RideApp.UBER
+                                // No ETA from either app — fall back to cheapest
+                                else -> {
+                                    Log.i(TAG, "No ETA available, falling back to cheapest")
+                                    if (pickMePrice <= uberPrice) RideApp.PICKME else RideApp.UBER
+                                }
+                            }
+                        }
                     }
                 }
                 pickMePrice != null -> RideApp.PICKME
@@ -186,19 +236,31 @@ class RideOrchestrator(private val context: Context) {
             _result.value = OrchestratorResult(
                 pickMePrice = pickMePrice,
                 uberPrice = uberPrice,
+                pickMeEta = pickMeEta,
+                uberEta = uberEta,
                 winner = winner
             )
 
             if (winner != null) {
                 val winnerName = winner.displayName
-                val savings = if (pickMePrice != null && uberPrice != null) {
-                    val diff = kotlin.math.abs(pickMePrice - uberPrice)
-                    " (save Rs ${String.format("%.0f", diff)})"
-                } else ""
+                val detail = when (decisionMode) {
+                    DecisionMode.CHEAPEST -> {
+                        if (pickMePrice != null && uberPrice != null) {
+                            val diff = kotlin.math.abs(pickMePrice - uberPrice)
+                            " (save Rs ${String.format("%.0f", diff)})"
+                        } else ""
+                    }
+                    DecisionMode.FASTEST -> {
+                        if (pickMeEta != null && uberEta != null) {
+                            val diff = kotlin.math.abs(pickMeEta - uberEta)
+                            " (${diff} min faster)"
+                        } else ""
+                    }
+                }
 
-                Log.i(TAG, "Winner: $winnerName$savings — booking now")
+                Log.i(TAG, "Winner: $winnerName$detail — booking now")
                 stepContext.collectedData["winner"] = winnerName
-                StepResult.SuccessWithData("winner_summary", "$winnerName$savings")
+                StepResult.SuccessWithData("winner_summary", "$winnerName$detail")
             } else {
                 StepResult.Failure("Could not determine prices from either app")
             }

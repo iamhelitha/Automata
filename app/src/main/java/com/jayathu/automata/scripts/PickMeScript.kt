@@ -1,7 +1,9 @@
 package com.jayathu.automata.scripts
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Rect
+import android.provider.Settings
 import android.util.Log
 import com.jayathu.automata.engine.ActionExecutor
 import com.jayathu.automata.engine.AutomationEngine
@@ -74,6 +76,7 @@ object PickMeScript {
             verifyAppInstalled(context),
             launchApp(context),
             waitForHomeScreen(),
+            checkAndEnableLocation(context),
             tapSearchBar()
         )
 
@@ -100,6 +103,7 @@ object PickMeScript {
         // if on home screen, it navigates through the full search flow.
         return listOf(
             launchApp(context),
+            checkAndEnableLocation(context),
             ensureOnRideOptionsScreen(destination, pickupAddress),
             selectRideType(mappedType),
             tapBookNow(),
@@ -143,6 +147,131 @@ object PickMeScript {
         delayAfterMs = 1500,
         action = { _, _ ->
             Log.i(TAG, "PickMe home screen detected")
+            StepResult.Success
+        }
+    )
+
+    /**
+     * Check if PickMe shows a location error (e.g., "location update failed").
+     * If location is off, open Settings, toggle it on, then relaunch PickMe.
+     */
+    private fun checkAndEnableLocation(context: Context) = AutomationStep(
+        name = "Check location services",
+        waitCondition = { root ->
+            root.packageName?.toString() == PACKAGE
+        },
+        timeoutMs = 25_000,
+        delayAfterMs = 2000,
+        maxRetries = 1,
+        action = { _, _ ->
+            val service = AutomataAccessibilityService.instance.value
+                ?: return@AutomationStep StepResult.Failure("No accessibility service")
+
+            val ocr = ScreenReader.captureAndRead(service)
+            if (ocr == null) {
+                return@AutomationStep StepResult.Skip("Could not capture screen")
+            }
+
+            Log.i(TAG, "Location check OCR: ${ocr.fullText.take(300)}")
+
+            // Check for location error messages
+            val hasLocationError = ocr.fullText.contains("location update failed", true) ||
+                    ocr.fullText.contains("location service", true) ||
+                    ocr.fullText.contains("turn on location", true) ||
+                    ocr.fullText.contains("enable location", true) ||
+                    ocr.fullText.contains("location is off", true) ||
+                    ocr.fullText.contains("location disabled", true)
+
+            if (!hasLocationError) {
+                Log.i(TAG, "No location error detected, proceeding")
+                return@AutomationStep StepResult.Skip("Location OK")
+            }
+
+            Log.i(TAG, "Location error detected! Opening location settings...")
+
+            // Open Android location settings
+            val intent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            kotlinx.coroutines.delay(2000)
+
+            // Find and tap the location toggle
+            val settingsRoot = service.getRootNode()
+            if (settingsRoot != null) {
+                // Try accessibility: look for the main location toggle (usually a Switch)
+                val toggleNode = NodeFinder.findAllNodesRecursive(settingsRoot) { node ->
+                    node.className?.toString()?.contains("Switch") == true ||
+                    node.className?.toString()?.contains("Toggle") == true
+                }.firstOrNull()
+
+                if (toggleNode != null) {
+                    val isChecked = toggleNode.isChecked
+                    Log.i(TAG, "Found location toggle, checked=$isChecked")
+                    if (!isChecked) {
+                        ActionExecutor.click(toggleNode)
+                        Log.i(TAG, "Toggled location ON via accessibility")
+                        kotlinx.coroutines.delay(1500)
+                    } else {
+                        Log.i(TAG, "Location toggle already ON")
+                    }
+                } else {
+                    // OCR fallback: find "Off" text and tap it, or find the toggle area
+                    val settingsOcr = ScreenReader.captureAndRead(service)
+                    if (settingsOcr != null) {
+                        Log.i(TAG, "Location settings OCR: ${settingsOcr.fullText.take(300)}")
+
+                        // Look for "Off" or "Use location" toggle area
+                        val offBlocks = ScreenReader.findTextBlocks(settingsOcr, "Off")
+                            .ifEmpty { ScreenReader.findTextBlocks(settingsOcr, "OFF") }
+                        val useLocationBlocks = ScreenReader.findTextBlocks(settingsOcr, "Use location")
+
+                        val targetBlock = offBlocks.firstOrNull() ?: useLocationBlocks.firstOrNull()
+                        if (targetBlock?.bounds != null) {
+                            val b = targetBlock.bounds!!
+                            Log.i(TAG, "Tapping location toggle via OCR: '${targetBlock.text}' at (${b.centerX()}, ${b.centerY()})")
+                            ActionExecutor.tapAtCoordinates(service, b.centerX().toFloat(), b.centerY().toFloat())
+                            kotlinx.coroutines.delay(1500)
+
+                            // Handle confirmation dialog if it appears (e.g., "Google may collect location data")
+                            val dialogRoot = service.getRootNode()
+                            if (dialogRoot != null) {
+                                val agreeNode = NodeFinder.findByText(dialogRoot, "Agree")
+                                    ?: NodeFinder.findByText(dialogRoot, "OK")
+                                    ?: NodeFinder.findByText(dialogRoot, "AGREE")
+                                if (agreeNode != null) {
+                                    Log.i(TAG, "Tapping confirmation dialog: ${agreeNode.text}")
+                                    ActionExecutor.click(agreeNode)
+                                    kotlinx.coroutines.delay(1000)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Go back and relaunch PickMe
+            Log.i(TAG, "Returning to PickMe after enabling location")
+            ActionExecutor.pressBack(service)
+            kotlinx.coroutines.delay(500)
+            ActionExecutor.pressBack(service)
+            kotlinx.coroutines.delay(500)
+            AutomationEngine.launchApp(context, PACKAGE)
+            kotlinx.coroutines.delay(3000)
+
+            // Verify location is now working
+            val verifyOcr = ScreenReader.captureAndRead(service)
+            if (verifyOcr != null) {
+                val stillHasError = verifyOcr.fullText.contains("location update failed", true) ||
+                        verifyOcr.fullText.contains("location is off", true) ||
+                        verifyOcr.fullText.contains("location disabled", true)
+                if (stillHasError) {
+                    Log.w(TAG, "Location still appears to be off after toggle attempt")
+                    return@AutomationStep StepResult.Failure("Could not enable location services")
+                }
+            }
+
+            Log.i(TAG, "Location enabled successfully, PickMe relaunched")
             StepResult.Success
         }
     )
@@ -702,7 +831,7 @@ object PickMeScript {
         timeoutMs = 15_000,
         maxRetries = 5,
         delayBeforeMs = 500,
-        action = { _, _ ->
+        action = { _, stepContext ->
             val service = AutomataAccessibilityService.instance.value
                 ?: return@AutomationStep StepResult.Failure("No accessibility service")
 
@@ -799,6 +928,40 @@ object PickMeScript {
                 } else {
                     Log.w(TAG, "Ride type '$rideType' NOT found in OCR, using first price")
                     allPrices.first().first
+                }
+
+                // Extract ETA for the selected ride type
+                val etaPattern = Regex("""(\d+)\s*min""", RegexOption.IGNORE_CASE)
+                val allEtas = mutableListOf<Pair<Int, Rect?>>()
+                for (block in ocr.blocks) {
+                    val etaMatch = etaPattern.find(block.text)
+                    if (etaMatch != null) {
+                        val minutes = etaMatch.groupValues[1].toIntOrNull()
+                        if (minutes != null) {
+                            allEtas.add(minutes to block.bounds)
+                            Log.i(TAG, "Found ETA: ${minutes} min at ${block.bounds} (raw: '${block.text}')")
+                        }
+                    }
+                }
+                if (allEtas.isNotEmpty() && targetIdx >= 0) {
+                    // Match ETA to ride type using same order-based strategy
+                    val etasWithBounds = allEtas.filter { it.second != null }
+                        .sortedBy { it.second!!.centerX() }
+                    val eta = if (targetIdx < etasWithBounds.size) {
+                        etasWithBounds[targetIdx].first
+                    } else {
+                        // Fallback: closest ETA by X-distance to ride type
+                        val targetX = rideTypePositions.getOrNull(targetIdx)?.second
+                        if (targetX != null) {
+                            allEtas.minByOrNull { (_, bounds) ->
+                                if (bounds != null) kotlin.math.abs(bounds.centerX() - targetX) else Int.MAX_VALUE
+                            }?.first
+                        } else allEtas.first().first
+                    }
+                    if (eta != null) {
+                        stepContext.collectedData["pickme_eta"] = eta.toString()
+                        Log.i(TAG, "PickMe ETA for $rideType: $eta min")
+                    }
                 }
 
                 Log.i(TAG, "PickMe price for $rideType: Rs $price")

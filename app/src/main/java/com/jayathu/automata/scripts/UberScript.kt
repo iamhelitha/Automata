@@ -600,7 +600,7 @@ object UberScript {
         timeoutMs = 15_000,
         maxRetries = 5,
         delayBeforeMs = 500,
-        action = { root, _ ->
+        action = { root, stepContext ->
             val service = AutomataAccessibilityService.instance.value
                 ?: return@AutomationStep StepResult.Failure("No accessibility service")
 
@@ -647,6 +647,39 @@ object UberScript {
                         }?.first ?: allPrices.first().first
                     } else {
                         allPrices.first().first
+                    }
+
+                    // Extract ETA for the selected ride type
+                    val etaPattern = Regex("""(\d+)\s*min""", RegexOption.IGNORE_CASE)
+                    val rideTypeBounds = rideTypeBlocks.firstOrNull()?.bounds
+                    val allEtas = mutableListOf<Pair<Int, Rect?>>()
+                    for (block in ocr.blocks) {
+                        val etaMatch = etaPattern.find(block.text)
+                        if (etaMatch != null) {
+                            val minutes = etaMatch.groupValues[1].toIntOrNull()
+                            if (minutes != null) {
+                                allEtas.add(minutes to block.bounds)
+                                Log.i(TAG, "Found ETA: ${minutes} min at ${block.bounds} (raw: '${block.text}')")
+                            }
+                        }
+                    }
+                    if (allEtas.isNotEmpty()) {
+                        val eta = if (rideTypeBounds != null) {
+                            // Match ETA closest to the ride type label
+                            allEtas.minByOrNull { (_, bounds) ->
+                                if (bounds != null) {
+                                    val dx = kotlin.math.abs(bounds.centerX() - rideTypeBounds.centerX())
+                                    val dy = kotlin.math.abs(bounds.centerY() - rideTypeBounds.centerY())
+                                    dx + dy
+                                } else Int.MAX_VALUE
+                            }?.first
+                        } else {
+                            allEtas.first().first
+                        }
+                        if (eta != null) {
+                            stepContext.collectedData["uber_eta"] = eta.toString()
+                            Log.i(TAG, "Uber ETA for $uberRideType: $eta min")
+                        }
                     }
 
                     Log.i(TAG, "Uber price for $uberRideType: LKR $price")

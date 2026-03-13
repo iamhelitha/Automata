@@ -155,9 +155,18 @@ class AutomationNotificationManager(private val context: Context) {
             "Automation Complete"
         }
 
+        val pickMeEta = data["pickme_eta"]
+        val uberEta = data["uber_eta"]
+
         val lines = mutableListOf<String>()
-        if (pickMePrice != null) lines.add("PickMe: Rs $pickMePrice")
-        if (uberPrice != null) lines.add("Uber: Rs $uberPrice")
+        if (pickMePrice != null) {
+            val etaSuffix = if (pickMeEta != null) " (${pickMeEta} min)" else ""
+            lines.add("PickMe: Rs $pickMePrice$etaSuffix")
+        }
+        if (uberPrice != null) {
+            val etaSuffix = if (uberEta != null) " (${uberEta} min)" else ""
+            lines.add("Uber: Rs $uberPrice$etaSuffix")
+        }
 
         val pickMe = pickMePrice?.toDoubleOrNull()
         val uber = uberPrice?.toDoubleOrNull()
