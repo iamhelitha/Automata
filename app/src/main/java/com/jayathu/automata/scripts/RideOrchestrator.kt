@@ -5,6 +5,7 @@ import android.util.Log
 import com.jayathu.automata.data.model.DecisionMode
 import com.jayathu.automata.data.model.RideApp
 import com.jayathu.automata.data.model.TaskConfig
+import com.jayathu.automata.engine.AutomationEngine
 import com.jayathu.automata.engine.AutomationStep
 import com.jayathu.automata.engine.StepResult
 import com.jayathu.automata.service.AutomataAccessibilityService
@@ -37,14 +38,19 @@ class RideOrchestrator(private val context: Context) {
     fun buildSteps(config: TaskConfig): List<AutomationStep> {
         val steps = mutableListOf<AutomationStep>()
 
+        val pickup = config.pickupAddress
+
+        // Phase 0: Force-close both apps so they start from a clean state
+        steps.add(forceCloseApps(config))
+
         // Phase 1: Read prices from both apps
         if (config.enablePickMe) {
-            steps.addAll(PickMeScript.buildSteps(context, config.destinationAddress, config.rideType))
+            steps.addAll(PickMeScript.buildSteps(context, config.destinationAddress, config.rideType, pickup))
             steps.add(returnToHome())
         }
 
         if (config.enableUber) {
-            steps.addAll(UberScript.buildSteps(context, config.destinationAddress, config.rideType))
+            steps.addAll(UberScript.buildSteps(context, config.destinationAddress, config.rideType, pickup))
             steps.add(returnToHome())
         }
 
@@ -63,13 +69,13 @@ class RideOrchestrator(private val context: Context) {
         if (config.enablePickMe) {
             steps.addAll(buildConditionalBookingSteps(
                 RideApp.PICKME,
-                PickMeScript.buildBookingSteps(context, config.destinationAddress, config.rideType)
+                PickMeScript.buildBookingSteps(context, config.destinationAddress, config.rideType, pickup)
             ))
         }
         if (config.enableUber) {
             steps.addAll(buildConditionalBookingSteps(
                 RideApp.UBER,
-                UberScript.buildBookingSteps(context, config.destinationAddress, config.rideType)
+                UberScript.buildBookingSteps(context, config.destinationAddress, config.rideType, pickup)
             ))
         }
 
@@ -104,6 +110,26 @@ class RideOrchestrator(private val context: Context) {
             )
         }
     }
+
+    /**
+     * Force-close PickMe and Uber so they start fresh from their home screens.
+     */
+    private fun forceCloseApps(config: TaskConfig) = AutomationStep(
+        name = "Force-close apps",
+        waitCondition = { true },
+        timeoutMs = 5_000,
+        delayAfterMs = 500,
+        action = { _, _ ->
+            if (config.enablePickMe) {
+                AutomationEngine.forceCloseApp(context, RideApp.PICKME.packageName)
+            }
+            if (config.enableUber) {
+                AutomationEngine.forceCloseApp(context, RideApp.UBER.packageName)
+            }
+            Log.i(TAG, "Force-closed enabled apps, ready for fresh start")
+            StepResult.Success
+        }
+    )
 
     private fun returnToHome() = AutomationStep(
         name = "Return to home screen",

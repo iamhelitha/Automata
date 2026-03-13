@@ -68,20 +68,24 @@ class AutomationNotificationManager(private val context: Context) {
                 ongoing = true,
                 progress = Pair(state.stepIndex + 1, state.totalSteps)
             )
-            is AutomationState.Error -> show(
-                "Error: ${state.stepName}",
-                state.reason,
-                ongoing = false
-            )
+            is AutomationState.Error -> {
+                dismiss() // Remove progress notification
+                showHighPriority(
+                    "Failed: ${state.stepName}",
+                    state.reason
+                )
+            }
             is AutomationState.Done -> {
                 dismiss() // Remove progress notification
                 showResult(state.collectedData)
             }
-            is AutomationState.Aborted -> show(
-                "Automation Aborted",
-                "The automation was stopped",
-                ongoing = false
-            )
+            is AutomationState.Aborted -> {
+                dismiss() // Remove progress notification
+                showHighPriority(
+                    "Automation Aborted",
+                    "The automation was stopped"
+                )
+            }
         }
     }
 
@@ -115,6 +119,29 @@ class AutomationNotificationManager(private val context: Context) {
 
     fun dismiss() {
         notificationManager.cancel(NOTIFICATION_ID)
+    }
+
+    /**
+     * Show a high-priority notification for errors/aborts so the user actually sees it.
+     */
+    private fun showHighPriority(title: String, text: String) {
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            0,
+            Intent(context, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = NotificationCompat.Builder(context, RESULT_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+
+        notificationManager.notify(RESULT_NOTIFICATION_ID, builder.build())
     }
 
     private fun showResult(data: Map<String, String>) {

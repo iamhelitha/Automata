@@ -1,5 +1,6 @@
 package com.jayathu.automata.engine
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -37,9 +38,24 @@ class AutomationEngine(private val service: AutomataAccessibilityService) {
 
         fun launchApp(context: Context, packageName: String): Boolean {
             val intent = context.packageManager.getLaunchIntentForPackage(packageName) ?: return false
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            // CLEAR_TASK + NEW_TASK clears the entire task stack, starting the app fresh
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
             context.startActivity(intent)
             return true
+        }
+
+        /**
+         * Force-close an app by killing its background processes and clearing its task.
+         * This ensures the app starts from its home screen on next launch.
+         */
+        fun forceCloseApp(context: Context, packageName: String) {
+            try {
+                val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                am.killBackgroundProcesses(packageName)
+                Log.i(TAG, "Killed background processes for $packageName")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to kill $packageName: ${e.message}")
+            }
         }
 
         fun isAppInstalled(context: Context, packageName: String): Boolean {
