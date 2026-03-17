@@ -90,6 +90,7 @@ object PickMeScript {
             tapDropFieldAndEnterDestination(destination),
             selectSearchResult(destination),
             waitForRideOptions(),
+            selectRideType(mappedType),
             readPriceViaOcr(mappedType)
         ))
 
@@ -111,6 +112,18 @@ object PickMeScript {
         )
     }
 
+    /**
+     * Quick booking steps — brings PickMe back to foreground (still on ride options screen)
+     * and taps Book Now. Used when the app was already navigated during price reading.
+     */
+    fun buildQuickBookingSteps(context: Context): List<AutomationStep> {
+        return listOf(
+            resumeApp(context),
+            tapBookNow(),
+            tapConfirmPickup()
+        )
+    }
+
     private fun verifyAppInstalled(context: Context) = AutomationStep(
         name = "Verify PickMe installed",
         waitCondition = { true },
@@ -120,6 +133,21 @@ object PickMeScript {
                 StepResult.Success
             } else {
                 StepResult.Failure("PickMe app is not installed")
+            }
+        }
+    )
+
+    private fun resumeApp(context: Context) = AutomationStep(
+        name = "Resume PickMe",
+        waitCondition = { true },
+        timeoutMs = 5_000,
+        delayAfterMs = 2000,
+        action = { _, _ ->
+            if (AutomationEngine.bringToForeground(context, PACKAGE)) {
+                Log.i(TAG, "Bringing PickMe back to foreground")
+                StepResult.Success
+            } else {
+                StepResult.Failure("Could not resume PickMe")
             }
         }
     )
@@ -889,48 +917,55 @@ object PickMeScript {
             }
 
             if (allPrices.isNotEmpty()) {
-                // Find all ride type labels and their X positions for order-based matching
+                // Find all ride type labels and their positions
                 val rideTypeLabels = listOf("Tuk", "Bike", "Flex", "Car", "Mini", "Nano")
-                val rideTypePositions = mutableListOf<Pair<String, Int>>()
+                val rideTypePositions = mutableListOf<Triple<String, Int, Int>>() // name, centerX, centerY
                 for (rt in rideTypeLabels) {
                     val blocks = ScreenReader.findTextBlocks(ocr, rt)
                     if (blocks.isNotEmpty() && blocks.first().bounds != null) {
                         val b = blocks.first().bounds!!
-                        rideTypePositions.add(rt to b.centerX())
+                        rideTypePositions.add(Triple(rt, b.centerX(), b.centerY()))
                         Log.i(TAG, "Ride type '$rt' at X=${b.centerX()}, Y=${b.centerY()}")
                     }
                 }
-                rideTypePositions.sortBy { it.second } // left to right
 
-                // Sort prices by X position
-                val pricesWithBounds = allPrices.filter { it.second != null }
-                    .sortedBy { it.second!!.centerX() }
+                // Find the target ride type label position
+                val targetLabel = rideTypePositions.find { it.first.equals(rideType, true) }
 
-                // Strategy 1: Order-based matching (most reliable for PickMe layout)
-                // Match ride types and prices by their left-to-right order
-                val targetIdx = rideTypePositions.indexOfFirst { it.first.equals(rideType, true) }
-                val price = if (targetIdx >= 0 && targetIdx < pricesWithBounds.size) {
-                    Log.i(TAG, "Order-based match: '$rideType' is at index $targetIdx of ${rideTypePositions.map { it.first }}")
-                    Log.i(TAG, "Prices in order: ${pricesWithBounds.map { "Rs ${it.first} (X=${it.second?.centerX()})" }}")
-                    pricesWithBounds[targetIdx].first
-                } else if (targetIdx >= 0 && rideTypePositions.size > 0) {
-                    // Fallback: use combined distance matching
-                    val targetX = rideTypePositions[targetIdx].second
-                    Log.i(TAG, "Fallback distance match for '$rideType' at X=$targetX")
-                    for ((p, bounds) in allPrices) {
-                        if (bounds != null) {
-                            Log.i(TAG, "  Price Rs $p: X=${bounds.centerX()}, dx=${kotlin.math.abs(bounds.centerX() - targetX)}")
-                        }
+                // Log all prices with positions for debugging
+                for ((p, bounds) in allPrices) {
+                    if (bounds != null) {
+                        Log.i(TAG, "Price Rs $p at X=${bounds.centerX()}, Y=${bounds.centerY()}")
                     }
-                    allPrices.minByOrNull { (_, bounds) ->
+                }
+
+                // Strategy: X-proximity matching
+                // PickMe layout has prices BELOW their ride type labels, aligned by X.
+                // Find the price whose X is closest to the target ride type label's X.
+                val price = if (targetLabel != null) {
+                    val targetX = targetLabel.second
+                    val targetY = targetLabel.third
+                    Log.i(TAG, "Matching price for '$rideType' at X=$targetX, Y=$targetY")
+
+                    // Only consider prices that are BELOW the label (Y > label Y)
+                    val pricesBelow = allPrices.filter { (_, bounds) ->
+                        bounds != null && bounds.centerY() > targetY
+                    }
+                    val candidates = pricesBelow.ifEmpty { allPrices.filter { it.second != null } }
+
+                    val matched = candidates.minByOrNull { (_, bounds) ->
                         if (bounds != null) kotlin.math.abs(bounds.centerX() - targetX) else Int.MAX_VALUE
-                    }?.first ?: allPrices.first().first
+                    }
+                    if (matched != null) {
+                        Log.i(TAG, "X-proximity match: Rs ${matched.first} at X=${matched.second?.centerX()} (dx=${matched.second?.let { kotlin.math.abs(it.centerX() - targetX) }})")
+                    }
+                    matched?.first ?: allPrices.first().first
                 } else {
-                    Log.w(TAG, "Ride type '$rideType' NOT found in OCR, using first price")
+                    Log.w(TAG, "Ride type '$rideType' NOT found in OCR labels, using first price")
                     allPrices.first().first
                 }
 
-                // Extract ETA for the selected ride type
+                // Extract ETA for the selected ride type using same X-proximity strategy
                 val etaPattern = Regex("""(\d+)\s*min""", RegexOption.IGNORE_CASE)
                 val allEtas = mutableListOf<Pair<Int, Rect?>>()
                 for (block in ocr.blocks) {
@@ -943,24 +978,20 @@ object PickMeScript {
                         }
                     }
                 }
-                if (allEtas.isNotEmpty() && targetIdx >= 0) {
-                    // Match ETA to ride type using same order-based strategy
-                    val etasWithBounds = allEtas.filter { it.second != null }
-                        .sortedBy { it.second!!.centerX() }
-                    val eta = if (targetIdx < etasWithBounds.size) {
-                        etasWithBounds[targetIdx].first
-                    } else {
-                        // Fallback: closest ETA by X-distance to ride type
-                        val targetX = rideTypePositions.getOrNull(targetIdx)?.second
-                        if (targetX != null) {
-                            allEtas.minByOrNull { (_, bounds) ->
-                                if (bounds != null) kotlin.math.abs(bounds.centerX() - targetX) else Int.MAX_VALUE
-                            }?.first
-                        } else allEtas.first().first
+                if (allEtas.isNotEmpty() && targetLabel != null) {
+                    val targetX = targetLabel.second
+                    val targetY = targetLabel.third
+                    // Prefer ETAs above the label (PickMe shows "In X min" above ride type)
+                    val etasAbove = allEtas.filter { (_, bounds) ->
+                        bounds != null && bounds.centerY() < targetY
                     }
+                    val candidates = etasAbove.ifEmpty { allEtas.filter { it.second != null } }
+                    val eta = candidates.minByOrNull { (_, bounds) ->
+                        if (bounds != null) kotlin.math.abs(bounds.centerX() - targetX) else Int.MAX_VALUE
+                    }?.first
                     if (eta != null) {
                         stepContext.collectedData["pickme_eta"] = eta.toString()
-                        Log.i(TAG, "PickMe ETA for $rideType: $eta min")
+                        Log.i(TAG, "PickMe ETA for $rideType: $eta min (X-proximity)")
                     }
                 }
 

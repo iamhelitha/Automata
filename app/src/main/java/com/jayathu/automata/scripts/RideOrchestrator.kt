@@ -22,7 +22,10 @@ data class OrchestratorResult(
     val error: String? = null
 )
 
-class RideOrchestrator(private val context: Context) {
+class RideOrchestrator(
+    private val context: Context,
+    private val onComparisonReady: ((Map<String, String>) -> Unit)? = null
+) {
 
     companion object {
         private const val TAG = "RideOrchestrator"
@@ -68,18 +71,18 @@ class RideOrchestrator(private val context: Context) {
         }
 
         // Phase 3: Book the winner
-        // We add booking steps for BOTH apps but each step checks collectedData["winner"]
-        // and skips if it's not the winner. This way we don't need dynamic step insertion.
+        // Use quick booking steps — the apps are still in memory on the ride options screen,
+        // so we just bring the winner to foreground and tap Book Now.
         if (config.enablePickMe) {
             steps.addAll(buildConditionalBookingSteps(
                 RideApp.PICKME,
-                PickMeScript.buildBookingSteps(context, config.destinationAddress, config.rideType, pickup)
+                PickMeScript.buildQuickBookingSteps(context)
             ))
         }
         if (config.enableUber) {
             steps.addAll(buildConditionalBookingSteps(
                 RideApp.UBER,
-                UberScript.buildBookingSteps(context, config.destinationAddress, config.rideType, pickup)
+                UberScript.buildQuickBookingSteps(context, config.rideType)
             ))
         }
 
@@ -187,6 +190,7 @@ class RideOrchestrator(private val context: Context) {
         action = { _, stepContext ->
             stepContext.collectedData["winner"] = app.displayName
             Log.i(TAG, "Only ${app.displayName} enabled, setting as winner")
+            onComparisonReady?.invoke(stepContext.collectedData.toMap())
             StepResult.SuccessWithData("winner", app.displayName)
         }
     )
@@ -260,6 +264,11 @@ class RideOrchestrator(private val context: Context) {
 
                 Log.i(TAG, "Winner: $winnerName$detail — booking now")
                 stepContext.collectedData["winner"] = winnerName
+                stepContext.collectedData["winner_summary"] = "$winnerName$detail"
+
+                // Fire heads-up popup notification with comparison results
+                onComparisonReady?.invoke(stepContext.collectedData.toMap())
+
                 StepResult.SuccessWithData("winner_summary", "$winnerName$detail")
             } else {
                 StepResult.Failure("Could not determine prices from either app")

@@ -12,6 +12,7 @@ import com.jayathu.automata.engine.AutomationEngine
 import com.jayathu.automata.engine.AutomationResult
 import com.jayathu.automata.engine.AutomationState
 import com.jayathu.automata.notification.AutomationNotificationManager
+import com.jayathu.automata.notification.ComparisonOverlay
 import com.jayathu.automata.engine.UiInspector
 import com.jayathu.automata.scripts.RideOrchestrator
 import com.jayathu.automata.service.AutomataAccessibilityService
@@ -132,7 +133,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             currentStep = "Starting..."
         )
 
-        val orchestrator = RideOrchestrator(context)
+        val overlay = service.let { ComparisonOverlay(it) }
+        val orchestrator = RideOrchestrator(context) { comparisonData ->
+            overlay.show(comparisonData)
+            notificationManager.showComparisonPopup(comparisonData)
+        }
         val steps = orchestrator.buildSteps(config)
 
         engine.runAutomation(steps) { result ->

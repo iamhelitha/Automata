@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.media.RingtoneManager
 import androidx.core.app.NotificationCompat
 import com.jayathu.automata.MainActivity
 import com.jayathu.automata.R
@@ -144,19 +145,26 @@ class AutomationNotificationManager(private val context: Context) {
         notificationManager.notify(RESULT_NOTIFICATION_ID, builder.build())
     }
 
-    private fun showResult(data: Map<String, String>) {
+    /**
+     * Show a heads-up pop-up notification with comparison results.
+     * Called right after prices are compared (before booking) so the user
+     * can see the winner without opening the app.
+     */
+    fun showComparisonPopup(data: Map<String, String>) {
         val pickMePrice = data["pickme_price"]
         val uberPrice = data["uber_price"]
         val winner = data["winner"]
-
-        val title = if (winner != null) {
-            "Winner: $winner"
-        } else {
-            "Automation Complete"
-        }
-
+        val winnerSummary = data["winner_summary"]
         val pickMeEta = data["pickme_eta"]
         val uberEta = data["uber_eta"]
+
+        val title = if (winnerSummary != null) {
+            "Booking $winnerSummary"
+        } else if (winner != null) {
+            "Booking $winner"
+        } else {
+            "Price Comparison"
+        }
 
         val lines = mutableListOf<String>()
         if (pickMePrice != null) {
@@ -175,7 +183,7 @@ class AutomationNotificationManager(private val context: Context) {
             lines.add("You save Rs ${String.format("%.0f", savings)}")
         }
 
-        val summary = if (lines.isEmpty()) "Done" else lines.joinToString("\n")
+        val summary = if (lines.isEmpty()) "Comparing..." else lines.joinToString("\n")
 
         val pendingIntent = PendingIntent.getActivity(
             context,
@@ -183,6 +191,8 @@ class AutomationNotificationManager(private val context: Context) {
             Intent(context, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+
+        val defaultSound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
 
         val builder = NotificationCompat.Builder(context, RESULT_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
@@ -192,7 +202,17 @@ class AutomationNotificationManager(private val context: Context) {
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_VIBRATE)
+            .setSound(defaultSound)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            // fullScreenIntent makes it pop up like a call/WhatsApp even on lock screen
+            .setFullScreenIntent(pendingIntent, true)
 
         notificationManager.notify(RESULT_NOTIFICATION_ID, builder.build())
+    }
+
+    private fun showResult(data: Map<String, String>) {
+        // Final notification reuses the same ID so it updates the comparison popup
+        showComparisonPopup(data)
     }
 }

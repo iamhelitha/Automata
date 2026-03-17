@@ -45,6 +45,17 @@ class AutomationEngine(private val service: AutomataAccessibilityService) {
         }
 
         /**
+         * Bring an app to the foreground without clearing its task stack.
+         * The app resumes exactly where it was left off.
+         */
+        fun bringToForeground(context: Context, packageName: String): Boolean {
+            val intent = context.packageManager.getLaunchIntentForPackage(packageName) ?: return false
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            context.startActivity(intent)
+            return true
+        }
+
+        /**
          * Force-close an app by killing its background processes and clearing its task.
          * This ensures the app starts from its home screen on next launch.
          */

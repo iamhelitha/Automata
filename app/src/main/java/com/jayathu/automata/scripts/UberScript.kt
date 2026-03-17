@@ -76,6 +76,19 @@ object UberScript {
     }
 
     /**
+     * Quick booking steps — brings Uber back to foreground (still on ride options screen)
+     * and taps Choose ride. Used when the app was already navigated during price reading.
+     */
+    fun buildQuickBookingSteps(context: Context, rideType: String): List<AutomationStep> {
+        return listOf(
+            resumeApp(context),
+            tapChooseRide(mapRideType(rideType)),
+            handleForMePrompt(),
+            tapConfirmPickup()
+        )
+    }
+
+    /**
      * Fix OCR-dropped decimal points in prices.
      * Sri Lankan ride prices are typically 100–9999 LKR with 2 decimal places.
      * If OCR drops the dot (e.g. "50861" instead of "508.61"), detect and fix it.
@@ -115,6 +128,21 @@ object UberScript {
                 StepResult.Success
             } else {
                 StepResult.Failure("Uber app is not installed")
+            }
+        }
+    )
+
+    private fun resumeApp(context: Context) = AutomationStep(
+        name = "Resume Uber",
+        waitCondition = { true },
+        timeoutMs = 5_000,
+        delayAfterMs = 2000,
+        action = { _, _ ->
+            if (AutomationEngine.bringToForeground(context, PACKAGE)) {
+                Log.i(TAG, "Bringing Uber back to foreground")
+                StepResult.Success
+            } else {
+                StepResult.Failure("Could not resume Uber")
             }
         }
     )
@@ -357,20 +385,70 @@ object UberScript {
         timeoutMs = 15_000,
         delayAfterMs = 2000,
         maxRetries = 5,
-        action = { root, _ ->
+        action = { root, stepContext ->
             val service = AutomataAccessibilityService.instance.value
                 ?: return@AutomationStep StepResult.Failure("No accessibility service")
 
-            // Check if already on ride options screen (Uber remembered the destination
-            // after selecting pickup). If so, skip destination entry entirely.
             val checkOcr = ScreenReader.captureAndRead(service)
             if (checkOcr != null) {
                 val hasPrice = checkOcr.fullText.contains("LKR", true) || checkOcr.fullText.contains("Rs", true)
                 val hasVehicle = checkOcr.fullText.contains("Moto", true) ||
                         checkOcr.fullText.contains("Tuk", true) || checkOcr.fullText.contains("Zip", true)
                 if (hasPrice && hasVehicle) {
-                    Log.i(TAG, "Already on ride options screen — skipping destination entry")
-                    return@AutomationStep StepResult.Skip("Already on ride options")
+                    // We're on ride options screen. This can happen when:
+                    // 1. Uber auto-navigated after pickup selection with a cached destination (BAD)
+                    // 2. Destination was already entered and Uber navigated here (GOOD)
+                    //
+                    // If we already typed the destination in a prior retry, trust it.
+                    val alreadyTyped = stepContext.collectedData["uber_dest_typed"] == "true"
+                    if (alreadyTyped) {
+                        Log.i(TAG, "Already on ride options after typing destination — skipping")
+                        stepContext.collectedData["destination_verified"] = "true"
+                        return@AutomationStep StepResult.Skip("Destination was typed, now on ride options")
+                    }
+
+                    // First time seeing ride options — check if destination words are on screen
+                    val destWords = destination.split(" ").filter { it.length > 2 }
+                    val hasCorrectDest = destWords.any { word ->
+                        checkOcr.fullText.contains(word, ignoreCase = true)
+                    }
+                    if (hasCorrectDest) {
+                        Log.i(TAG, "Already on ride options with correct destination — skipping")
+                        stepContext.collectedData["destination_verified"] = "true"
+                        return@AutomationStep StepResult.Skip("Already on ride options with correct destination")
+                    }
+
+                    // Destination not found in text — likely a cached wrong destination.
+                    // Only try to fix it once (first retry), then give up and trust it
+                    // to avoid infinite retry loops on truncated destination names.
+                    val fixAttempted = stepContext.collectedData["uber_dest_fix_attempted"] == "true"
+                    if (fixAttempted) {
+                        Log.i(TAG, "Already attempted to fix destination, accepting current ride options")
+                        stepContext.collectedData["destination_verified"] = "true"
+                        return@AutomationStep StepResult.Skip("Accepting ride options after fix attempt")
+                    }
+
+                    // First attempt: try to navigate back to search to enter correct destination
+                    Log.i(TAG, "On ride options but destination may not match '$destination' — navigating back to search")
+                    stepContext.collectedData["uber_dest_fix_attempted"] = "true"
+
+                    val routeBlocks = checkOcr.blocks.filter { block ->
+                        val top = block.bounds?.top ?: 0
+                        top in 50..350 && block.text.length > 3
+                    }
+                    val routeBlock = routeBlocks.lastOrNull { it.bounds != null }
+                    if (routeBlock?.bounds != null) {
+                        val b = routeBlock.bounds!!
+                        Log.i(TAG, "Tapping route area to edit destination: '${routeBlock.text}' at (${b.centerX()}, ${b.centerY()})")
+                        ActionExecutor.tapAtCoordinates(service, b.centerX().toFloat(), b.centerY().toFloat())
+                        kotlinx.coroutines.delay(2000)
+                    } else {
+                        Log.i(TAG, "Tapping top area to edit route")
+                        ActionExecutor.tapAtCoordinates(service, 540f, 200f)
+                        kotlinx.coroutines.delay(2000)
+                    }
+
+                    return@AutomationStep StepResult.Retry("Navigated back to search to fix destination")
                 }
             }
 
@@ -426,6 +504,7 @@ object UberScript {
                 ActionExecutor.clearText(destField)
                 if (ActionExecutor.setText(destField, destination)) {
                     Log.i(TAG, "Destination text set: $destination")
+                    stepContext.collectedData["uber_dest_typed"] = "true"
                     // Wait for search results
                     kotlinx.coroutines.delay(1500)
                     return@AutomationStep StepResult.Success
@@ -444,19 +523,27 @@ object UberScript {
         timeoutMs = 10_000,
         delayAfterMs = 3000,
         maxRetries = 4,
-        action = { root, _ ->
+        action = { root, stepContext ->
             val service = AutomataAccessibilityService.instance.value
                 ?: return@AutomationStep StepResult.Failure("No accessibility service")
 
-            // Check if already on ride options (destination entry was skipped)
+            // Check if already on ride options with correct destination
             val checkOcr = ScreenReader.captureAndRead(service)
             if (checkOcr != null) {
                 val hasPrice = checkOcr.fullText.contains("LKR", true) || checkOcr.fullText.contains("Rs", true)
                 val hasVehicle = checkOcr.fullText.contains("Moto", true) ||
                         checkOcr.fullText.contains("Tuk", true) || checkOcr.fullText.contains("Zip", true)
                 if (hasPrice && hasVehicle) {
-                    Log.i(TAG, "Already on ride options screen — skipping search result selection")
-                    return@AutomationStep StepResult.Skip("Already on ride options")
+                    // Skip if destination was verified or typed by enterDestination
+                    val verified = stepContext.collectedData["destination_verified"] == "true"
+                    val typed = stepContext.collectedData["uber_dest_typed"] == "true"
+                    if (verified || typed) {
+                        Log.i(TAG, "Already on ride options (verified=$verified, typed=$typed) — skipping")
+                        return@AutomationStep StepResult.Skip("Already on ride options")
+                    }
+                    // enterDestination hasn't run yet — this shouldn't happen normally
+                    Log.w(TAG, "On ride options but destination not verified/typed — retrying")
+                    return@AutomationStep StepResult.Retry("Destination not yet verified")
                 }
             }
 
@@ -866,6 +953,29 @@ object UberScript {
                             Log.i(TAG, "Selecting pickup result: '${match.text}'")
                             ActionExecutor.tapAtCoordinates(service, 540f, match.bounds!!.centerY().toFloat())
                             kotlinx.coroutines.delay(2500)
+
+                            // After selecting pickup, Uber may auto-navigate to ride options
+                            // with a cached destination. Check and navigate back if needed.
+                            val afterPickupOcr = ScreenReader.captureAndRead(service)
+                            if (afterPickupOcr != null) {
+                                val hasPrice = afterPickupOcr.fullText.contains("LKR", true) || afterPickupOcr.fullText.contains("Rs", true)
+                                val hasVehicle = afterPickupOcr.fullText.contains("Moto", true) ||
+                                        afterPickupOcr.fullText.contains("Tuk", true) || afterPickupOcr.fullText.contains("Zip", true)
+                                if (hasPrice && hasVehicle) {
+                                    Log.i(TAG, "Uber auto-navigated to ride options after pickup — tapping route to edit destination")
+                                    val routeBlocks = afterPickupOcr.blocks.filter { block ->
+                                        val top = block.bounds?.top ?: 0
+                                        top in 50..350 && block.text.length > 3
+                                    }
+                                    val routeBlock = routeBlocks.lastOrNull { it.bounds != null }
+                                    if (routeBlock?.bounds != null) {
+                                        ActionExecutor.tapAtCoordinates(service, routeBlock.bounds!!.centerX().toFloat(), routeBlock.bounds!!.centerY().toFloat())
+                                    } else {
+                                        ActionExecutor.tapAtCoordinates(service, 540f, 200f)
+                                    }
+                                    kotlinx.coroutines.delay(2000)
+                                }
+                            }
                         }
                     }
                 }
