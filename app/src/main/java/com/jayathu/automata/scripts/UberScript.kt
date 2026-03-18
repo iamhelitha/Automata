@@ -7,6 +7,7 @@ import com.jayathu.automata.engine.ActionExecutor
 import com.jayathu.automata.engine.AutomationEngine
 import com.jayathu.automata.engine.AutomationStep
 import com.jayathu.automata.engine.NodeFinder
+import com.jayathu.automata.engine.OcrResult
 import com.jayathu.automata.engine.ScreenReader
 import com.jayathu.automata.engine.StepResult
 import com.jayathu.automata.engine.UiInspector
@@ -1013,99 +1014,87 @@ object UberScript {
         timeoutMs = 15_000,
         maxRetries = 5,
         delayBeforeMs = 500,
-        action = { root, stepContext ->
+        action = { _, stepContext ->
             val service = AutomataAccessibilityService.instance.value
                 ?: return@AutomationStep StepResult.Failure("No accessibility service")
 
-            // Use OCR with proximity matching to get the correct ride type's price.
-            // Uber shows multiple ride types (Tuk, Moto, Zip, Minivan) with prices —
-            // we need to match the price closest to our target ride type label.
+            // Simple approach: find the ride type label (e.g. "Tuk") in OCR,
+            // then grab the price on the same row (closest Y-center).
             val ocr = ScreenReader.captureAndRead(service)
             if (ocr != null) {
                 Log.i(TAG, "Price reading OCR: ${ocr.fullText.take(500)}")
 
+                // Find the ride type label
+                val rideTypeBlocks = ScreenReader.findTextBlocks(ocr, uberRideType)
+                if (rideTypeBlocks.isEmpty() || rideTypeBlocks.first().bounds == null) {
+                    Log.w(TAG, "Ride type '$uberRideType' not found in OCR")
+                    return@AutomationStep StepResult.Retry("Ride type label not visible")
+                }
+                val rideBounds = rideTypeBlocks.first().bounds!!
+                Log.i(TAG, "Ride type '$uberRideType' found at Y=${rideBounds.centerY()}")
+
+                // Collect all prices with their positions
                 val pricePattern = Regex("""(?:LKR|[Rr]s\.?)\s*(\d[\d,.]*)""", RegexOption.IGNORE_CASE)
-                val allPrices = mutableListOf<Pair<String, Rect?>>()
+                val allPrices = mutableListOf<Triple<String, Rect?, String>>() // price, bounds, rawText
 
                 for (block in ocr.blocks) {
-                    // Try original text first, then try with OCR misread corrections
-                    // only in the numeric portion (after the currency prefix)
-                    val match = pricePattern.find(block.text)
+                    val text = block.text
+                    val match = pricePattern.find(text)
                         ?: run {
-                            // Only fix OCR misreads in the digits after currency prefix
-                            val cleaned = block.text.replace(Regex("(?<=\\d)[lI](?=\\d)")) { m ->
-                                "1"
-                            }.replace(Regex("(?<=\\d)O(?=\\d)")) { "0" }
+                            val cleaned = text.replace(Regex("(?<=\\d)[lI](?=\\d)")) { "1" }
+                                .replace(Regex("(?<=\\d)O(?=\\d)")) { "0" }
                             pricePattern.find(cleaned)
                         }
                     if (match != null) {
                         val rawPrice = ScreenReader.sanitizePrice(match.groupValues[1])
                         val price = normalizePrice(rawPrice)
-                        allPrices.add(price to block.bounds)
-                        Log.i(TAG, "Found price: LKR $price at ${block.bounds} (raw: '${block.text}', extracted: '$rawPrice')")
+                        allPrices.add(Triple(price, block.bounds, text))
+                        Log.i(TAG, "Found price: LKR $price at Y=${block.bounds?.centerY()} (raw: '$text')")
                     }
                 }
 
-                if (allPrices.isNotEmpty()) {
-                    // Match price to ride type by proximity
-                    val rideTypeBlocks = ScreenReader.findTextBlocks(ocr, uberRideType)
-                    val price = if (rideTypeBlocks.isNotEmpty() && rideTypeBlocks.first().bounds != null && allPrices.size > 1) {
-                        val rideBounds = rideTypeBlocks.first().bounds!!
-                        Log.i(TAG, "Ride type '$uberRideType' at X=${rideBounds.centerX()}, Y=${rideBounds.centerY()}")
-                        // Try X-distance first (horizontal layout), fall back to Y-distance (vertical)
-                        allPrices.minByOrNull { (_, bounds) ->
-                            if (bounds != null) {
-                                // Use combined distance to handle both horizontal and vertical layouts
-                                val dx = kotlin.math.abs(bounds.centerX() - rideBounds.centerX())
-                                val dy = kotlin.math.abs(bounds.centerY() - rideBounds.centerY())
-                                dx + dy
-                            } else Int.MAX_VALUE
-                        }?.first ?: allPrices.first().first
-                    } else {
-                        allPrices.first().first
-                    }
-
-                    // Extract ETA for the selected ride type
-                    val etaPattern = Regex("""(\d+)\s*min""", RegexOption.IGNORE_CASE)
-                    val rideTypeBounds = rideTypeBlocks.firstOrNull()?.bounds
-                    val allEtas = mutableListOf<Pair<Int, Rect?>>()
-                    for (block in ocr.blocks) {
-                        val etaMatch = etaPattern.find(block.text)
-                        if (etaMatch != null) {
-                            val minutes = etaMatch.groupValues[1].toIntOrNull()
-                            if (minutes != null) {
-                                allEtas.add(minutes to block.bounds)
-                                Log.i(TAG, "Found ETA: ${minutes} min at ${block.bounds} (raw: '${block.text}')")
-                            }
-                        }
-                    }
-                    if (allEtas.isNotEmpty()) {
-                        val eta = if (rideTypeBounds != null) {
-                            // Match ETA closest to the ride type label
-                            allEtas.minByOrNull { (_, bounds) ->
-                                if (bounds != null) {
-                                    val dx = kotlin.math.abs(bounds.centerX() - rideTypeBounds.centerX())
-                                    val dy = kotlin.math.abs(bounds.centerY() - rideTypeBounds.centerY())
-                                    dx + dy
-                                } else Int.MAX_VALUE
-                            }?.first
-                        } else {
-                            allEtas.first().first
-                        }
-                        if (eta != null) {
-                            stepContext.collectedData["uber_eta"] = eta.toString()
-                            Log.i(TAG, "Uber ETA for $uberRideType: $eta min")
-                        }
-                    }
-
-                    Log.i(TAG, "Uber price for $uberRideType: LKR $price")
-                    return@AutomationStep StepResult.SuccessWithData("uber_price", price)
+                if (allPrices.isEmpty()) {
+                    Log.w(TAG, "No prices found in OCR")
+                    return@AutomationStep StepResult.Retry("No prices visible")
                 }
 
-                Log.w(TAG, "No prices found in OCR")
+                // Pick the price whose Y-center is closest to the ride type label.
+                // This grabs the price on the same row as "Tuk"/"Zip"/"Moto".
+                val matched = allPrices.minByOrNull { (_, bounds, _) ->
+                    if (bounds != null) {
+                        kotlin.math.abs(bounds.centerY() - rideBounds.centerY())
+                    } else Int.MAX_VALUE
+                }!!
+                val price = matched.first
+                Log.i(TAG, "Matched price for '$uberRideType': LKR $price " +
+                        "(Y-distance=${matched.second?.let { kotlin.math.abs(it.centerY() - rideBounds.centerY()) }}, " +
+                        "raw: '${matched.third}')")
+
+                // Also grab ETA on the same row
+                val etaPattern = Regex("""(\d+)\s*min""", RegexOption.IGNORE_CASE)
+                val allEtas = mutableListOf<Pair<Int, Rect?>>()
+                for (block in ocr.blocks) {
+                    val etaMatch = etaPattern.find(block.text)
+                    if (etaMatch != null) {
+                        val minutes = etaMatch.groupValues[1].toIntOrNull()
+                        if (minutes != null) allEtas.add(minutes to block.bounds)
+                    }
+                }
+                if (allEtas.isNotEmpty()) {
+                    val eta = allEtas.minByOrNull { (_, bounds) ->
+                        if (bounds != null) kotlin.math.abs(bounds.centerY() - rideBounds.centerY())
+                        else Int.MAX_VALUE
+                    }?.first
+                    if (eta != null) {
+                        stepContext.collectedData["uber_eta"] = eta.toString()
+                        Log.i(TAG, "Uber ETA for $uberRideType: $eta min")
+                    }
+                }
+
+                return@AutomationStep StepResult.SuccessWithData("uber_price", price)
             }
 
-            StepResult.Retry("Could not extract Uber price")
+            StepResult.Retry("Could not capture screen")
         }
     )
 

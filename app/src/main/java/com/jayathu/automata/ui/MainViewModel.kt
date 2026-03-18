@@ -17,6 +17,7 @@ import com.jayathu.automata.engine.AutomationEngine
 import com.jayathu.automata.engine.AutomationResult
 import com.jayathu.automata.engine.AutomationState
 import com.jayathu.automata.notification.AutomationNotificationManager
+import com.jayathu.automata.notification.AutomationControlOverlay
 import com.jayathu.automata.notification.ComparisonOverlay
 import com.jayathu.automata.engine.UiInspector
 import com.jayathu.automata.scripts.RideOrchestrator
@@ -71,6 +72,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _notificationSound = MutableStateFlow(true)
     val notificationSound: StateFlow<Boolean> = _notificationSound.asStateFlow()
+
+    private var controlOverlay: AutomationControlOverlay? = null
 
     fun setAutoEnableLocation(enabled: Boolean) {
         preferencesManager.autoEnableLocation = enabled
@@ -234,20 +237,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val autoClose = _autoCloseApps.value
         val bypassSomeoneElse = _autoBypassSomeoneElse.value
 
-        val overlay = if (showOverlay) ComparisonOverlay(service, overlayDuration * 1000L) else null
+        val comparisonOverlay = if (showOverlay) ComparisonOverlay(service, overlayDuration * 1000L) else null
         val orchestrator = RideOrchestrator(
             context = context,
             autoBypassSomeoneElse = bypassSomeoneElse,
             autoCloseApps = autoClose,
             onComparisonReady = { comparisonData ->
-                overlay?.show(comparisonData)
+                comparisonOverlay?.show(comparisonData)
                 notificationManager.showComparisonPopup(comparisonData, soundEnabled)
             }
         )
         val steps = orchestrator.buildSteps(config)
 
+        // Show floating control pill with timer and stop button
+        val control = AutomationControlOverlay(service) { abortAutomation() }
+        controlOverlay = control
+        control.show()
+
         engine.runAutomation(steps) { result ->
             Log.i(TAG, "Automation result: $result")
+            control.dismiss()
+            controlOverlay = null
             _automationState.value = _automationState.value.copy(
                 isRunning = false,
                 result = result
@@ -258,6 +268,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun abortAutomation() {
         val service = AutomataAccessibilityService.instance.value ?: return
         service.getEngine()?.abort()
+        controlOverlay?.dismiss()
+        controlOverlay = null
         _automationState.value = _automationState.value.copy(
             isRunning = false,
             result = AutomationResult.Aborted
