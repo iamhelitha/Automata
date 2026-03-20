@@ -26,6 +26,7 @@ class RideOrchestrator(
     private val context: Context,
     private val autoBypassSomeoneElse: Boolean = true,
     private val autoCloseApps: Boolean = false,
+    private val preferredApp: RideApp = RideApp.PICKME,
     private val onComparisonReady: ((Map<String, String>) -> Unit)? = null
 ) {
 
@@ -254,44 +255,66 @@ class RideOrchestrator(
             Log.i(TAG, "ETA comparison - PickMe: ${pickMeEta ?: "N/A"} min, Uber: ${uberEta ?: "N/A"} min")
             Log.i(TAG, "Decision mode: $decisionMode")
 
-            val winner = when {
+            val pricesEqual = pickMePrice != null && uberPrice != null && pickMePrice == uberPrice
+            val etasEqual = pickMeEta != null && uberEta != null && pickMeEta == uberEta
+
+            data class Decision(val winner: RideApp, val reason: String)
+
+            val decision: Decision? = when {
                 pickMePrice != null && uberPrice != null -> {
                     when (decisionMode) {
                         DecisionMode.CHEAPEST -> {
-                            val w = if (pickMePrice < uberPrice) RideApp.PICKME
-                                    else if (uberPrice < pickMePrice) RideApp.UBER
-                                    else RideApp.PICKME // tie → PickMe
-                            Log.i(TAG, "CHEAPEST: PickMe=$pickMePrice vs Uber=$uberPrice → winner=${w.displayName}")
-                            w
+                            when {
+                                pickMePrice < uberPrice -> Decision(RideApp.PICKME, "save Rs ${String.format("%.0f", uberPrice - pickMePrice)}")
+                                uberPrice < pickMePrice -> Decision(RideApp.UBER, "save Rs ${String.format("%.0f", pickMePrice - uberPrice)}")
+                                // Prices tied, fall back to fastest
+                                pickMeEta != null && uberEta != null && pickMeEta < uberEta ->
+                                    Decision(RideApp.PICKME, "same price, ${uberEta - pickMeEta} min faster")
+                                pickMeEta != null && uberEta != null && uberEta < pickMeEta ->
+                                    Decision(RideApp.UBER, "same price, ${pickMeEta - uberEta} min faster")
+                                // Both price and ETA tied (or no ETA), use preferred app
+                                else -> Decision(preferredApp, if (etasEqual) "same price and ETA" else "same price")
+                            }
                         }
                         DecisionMode.FASTEST -> {
-                            val w = when {
-                                pickMeEta != null && uberEta != null -> {
-                                    if (pickMeEta <= uberEta) RideApp.PICKME else RideApp.UBER
-                                }
-                                pickMeEta != null -> RideApp.PICKME
-                                uberEta != null -> RideApp.UBER
-                                // No ETA from either app — fall back to cheapest
+                            when {
+                                pickMeEta != null && uberEta != null && pickMeEta < uberEta ->
+                                    Decision(RideApp.PICKME, "${uberEta - pickMeEta} min faster")
+                                pickMeEta != null && uberEta != null && uberEta < pickMeEta ->
+                                    Decision(RideApp.UBER, "${pickMeEta - uberEta} min faster")
+                                // ETAs tied, fall back to cheapest
+                                etasEqual && pickMePrice < uberPrice ->
+                                    Decision(RideApp.PICKME, "same ETA, save Rs ${String.format("%.0f", uberPrice - pickMePrice)}")
+                                etasEqual && uberPrice < pickMePrice ->
+                                    Decision(RideApp.UBER, "same ETA, save Rs ${String.format("%.0f", pickMePrice - uberPrice)}")
+                                // Both ETA and price tied, use preferred app
+                                etasEqual && pricesEqual ->
+                                    Decision(preferredApp, "same ETA and price")
+                                // Only one ETA available
+                                pickMeEta != null -> Decision(RideApp.PICKME, "only ETA available")
+                                uberEta != null -> Decision(RideApp.UBER, "only ETA available")
+                                // No ETA from either, fall back to cheapest
                                 else -> {
                                     Log.i(TAG, "No ETA available, falling back to cheapest")
-                                    if (pickMePrice <= uberPrice) RideApp.PICKME else RideApp.UBER
+                                    if (pickMePrice <= uberPrice) Decision(RideApp.PICKME, "no ETA, cheapest")
+                                    else Decision(RideApp.UBER, "no ETA, cheapest")
                                 }
                             }
-                            Log.i(TAG, "FASTEST: PickMe ETA=$pickMeEta vs Uber ETA=$uberEta → winner=${w.displayName}")
-                            w
                         }
                     }
                 }
                 pickMePrice != null -> {
                     Log.i(TAG, "Only PickMe price available ($pickMePrice), Uber price missing")
-                    RideApp.PICKME
+                    Decision(RideApp.PICKME, "only option")
                 }
                 uberPrice != null -> {
                     Log.i(TAG, "Only Uber price available ($uberPrice), PickMe price missing")
-                    RideApp.UBER
+                    Decision(RideApp.UBER, "only option")
                 }
                 else -> null
             }
+
+            val winner = decision?.winner
 
             _result.value = OrchestratorResult(
                 pickMePrice = pickMePrice,
@@ -301,31 +324,20 @@ class RideOrchestrator(
                 winner = winner
             )
 
-            if (winner != null) {
-                val winnerName = winner.displayName
-                val detail = when (decisionMode) {
-                    DecisionMode.CHEAPEST -> {
-                        if (pickMePrice != null && uberPrice != null) {
-                            val diff = kotlin.math.abs(pickMePrice - uberPrice)
-                            " (save Rs ${String.format("%.0f", diff)})"
-                        } else ""
-                    }
-                    DecisionMode.FASTEST -> {
-                        if (pickMeEta != null && uberEta != null) {
-                            val diff = kotlin.math.abs(pickMeEta - uberEta)
-                            " (${diff} min faster)"
-                        } else ""
-                    }
-                }
+            if (decision != null) {
+                val winnerName = decision.winner.displayName
+                val reason = decision.reason
 
                 stepContext.collectedData["winner"] = winnerName
-                stepContext.collectedData["winner_summary"] = "$winnerName$detail"
-                Log.i(TAG, "Winner stored: collectedData[winner]='${stepContext.collectedData["winner"]}', summary='$winnerName$detail' — booking now")
+                stepContext.collectedData["winner_summary"] = "$winnerName ($reason)"
+                stepContext.collectedData["decision_mode"] = decisionMode.name
+                stepContext.collectedData["decision_reason"] = reason
+                Log.i(TAG, "Winner: $winnerName ($reason)")
 
                 // Fire heads-up popup notification with comparison results
                 onComparisonReady?.invoke(stepContext.collectedData.toMap())
 
-                StepResult.SuccessWithData("winner_summary", "$winnerName$detail")
+                StepResult.SuccessWithData("winner_summary", "$winnerName ($reason)")
             } else {
                 StepResult.Failure("Could not determine prices from either app")
             }

@@ -192,11 +192,9 @@ class AutomationNotificationManager(private val context: Context) {
             lines.add("Uber: Rs $uberPrice$etaSuffix")
         }
 
-        val pickMe = pickMePrice?.toDoubleOrNull()
-        val uber = uberPrice?.toDoubleOrNull()
-        if (pickMe != null && uber != null) {
-            val savings = kotlin.math.abs(pickMe - uber)
-            lines.add("You save Rs ${String.format("%.0f", savings)}")
+        val decisionReason = data["decision_reason"]
+        if (decisionReason != null) {
+            lines.add(decisionReason.replaceFirstChar { it.uppercaseChar() })
         }
 
         val summary = if (lines.isEmpty()) "Comparing..." else lines.joinToString("\n")

@@ -33,11 +33,17 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,6 +60,8 @@ fun DashboardScreen(
     automationState: AutomationUiState,
     dumpCountdown: Int,
     debugMode: Boolean = false,
+    showRunWarning: Boolean = true,
+    onDismissRunWarning: () -> Unit = {},
     onAddTask: () -> Unit,
     onEditTask: (Long) -> Unit,
     onGoTask: (TaskConfig) -> Unit,
@@ -63,6 +71,55 @@ fun DashboardScreen(
     onDumpUi: () -> Unit,
     onSettingsClick: () -> Unit
 ) {
+    var pendingConfig by remember { mutableStateOf<TaskConfig?>(null) }
+    var dontShowAgain by remember { mutableStateOf(false) }
+
+    if (pendingConfig != null) {
+        AlertDialog(
+            onDismissRequest = { pendingConfig = null },
+            icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+            title = { Text("Heads up") },
+            text = {
+                Column {
+                    Text(
+                        "Please don't touch the screen while the script is running. If you need to stop it, use the floating stop button that appears on screen.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Checkbox(
+                            checked = dontShowAgain,
+                            onCheckedChange = { dontShowAgain = it }
+                        )
+                        Text(
+                            "Don't show this again",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(start = 4.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val config = pendingConfig
+                    pendingConfig = null
+                    if (dontShowAgain) onDismissRunWarning()
+                    if (config != null) onGoTask(config)
+                }) {
+                    Text("Start")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingConfig = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -264,7 +321,13 @@ fun DashboardScreen(
                             config = config,
                             isRunning = automationState.isRunning,
                             onEdit = { onEditTask(config.id) },
-                            onGo = { onGoTask(config) }
+                            onGo = {
+                                if (showRunWarning) {
+                                    pendingConfig = config
+                                } else {
+                                    onGoTask(config)
+                                }
+                            }
                         )
                     }
                 }

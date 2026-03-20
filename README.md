@@ -195,6 +195,44 @@ Building this project involved solving several non-trivial problems:
    - If prompted, allow installation from unknown sources: **Settings → Apps → Special access → Install unknown apps** → enable for your browser or file manager
 5. Tap **Install**
 
+### Troubleshooting Installation
+
+Installing apps from outside the Play Store triggers several Android security features. Here's how to get past them:
+
+#### 1. Google Play Protect blocks the install
+
+Google Play Protect may flag the APK as unverified and block installation.
+
+**Fix:**
+1. Open the **Google Play Store** app
+2. Tap your **profile icon** (top right) → **Play Protect**
+3. Tap the **gear icon** (top right)
+4. Turn off **Scan apps with Play Protect**
+5. Install the APK, then re-enable Play Protect afterwards
+
+#### 2. Samsung Auto Blocker prevents installation (Samsung devices)
+
+Samsung devices have an additional security feature called **Auto Blocker** that blocks sideloaded apps.
+
+**Fix:**
+1. Go to **Settings → Security and privacy → Auto Blocker**
+2. Turn it **off**
+3. Install the APK, then re-enable it afterwards
+
+#### 3. Accessibility service option is greyed out
+
+Android restricts sideloaded apps from using accessibility services by default. You need to allow restricted settings first.
+
+**Fix:**
+1. Go to **Settings → Apps**
+2. Find and tap **Automata**
+3. Tap the **three-dot menu** (top right corner)
+4. Tap **Allow restricted settings**
+5. You may need to confirm with your PIN, pattern, or fingerprint
+6. Now go to **Settings → Accessibility → Automata** and turn it on
+
+> These restrictions exist because accessibility services have deep access to your device. They apply to all sideloaded apps, not just Automata.
+
 ### Build from Source
 
 If you prefer to build it yourself:
@@ -249,6 +287,7 @@ Open Settings from the top bar to configure:
 | Notification sound | Play sound when results are ready |
 | Auto-close apps | Close ride apps after booking is complete |
 | Default decision mode | Cheapest or Fastest |
+| Preferred app | Tiebreaker when both price and ETA are the same |
 
 ### Stopping a Running Automation
 

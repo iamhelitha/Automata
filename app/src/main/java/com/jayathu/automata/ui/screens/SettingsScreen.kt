@@ -43,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.jayathu.automata.data.model.DecisionMode
+import com.jayathu.automata.data.model.RideApp
 import com.jayathu.automata.data.model.SavedLocation
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -57,6 +58,7 @@ fun SettingsScreen(
     autoCloseApps: Boolean,
     defaultDecisionMode: DecisionMode,
     notificationSound: Boolean,
+    preferredApp: RideApp,
     onAutoEnableLocationChange: (Boolean) -> Unit,
     onDebugModeChange: (Boolean) -> Unit,
     onAutoBypassSomeoneElseChange: (Boolean) -> Unit,
@@ -65,6 +67,7 @@ fun SettingsScreen(
     onAutoCloseAppsChange: (Boolean) -> Unit,
     onDefaultDecisionModeChange: (DecisionMode) -> Unit,
     onNotificationSoundChange: (Boolean) -> Unit,
+    onPreferredAppChange: (RideApp) -> Unit,
     onAddLocation: (SavedLocation) -> Unit,
     onDeleteLocation: (SavedLocation) -> Unit,
     onBack: () -> Unit
@@ -132,6 +135,12 @@ fun SettingsScreen(
                 DefaultDecisionModeSelector(
                     currentMode = defaultDecisionMode,
                     onModeChange = onDefaultDecisionModeChange
+                )
+            }
+            item {
+                PreferredAppSelector(
+                    currentApp = preferredApp,
+                    onAppChange = onPreferredAppChange
                 )
             }
 
@@ -395,6 +404,41 @@ private fun DefaultDecisionModeSelector(
                         DecisionMode.CHEAPEST -> "Cheapest"
                         DecisionMode.FASTEST -> "Fastest"
                     },
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(start = 8.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PreferredAppSelector(
+    currentApp: RideApp,
+    onAppChange: (RideApp) -> Unit
+) {
+    Column(modifier = Modifier.padding(vertical = 12.dp)) {
+        Text("Preferred app", style = MaterialTheme.typography.bodyLarge)
+        Text(
+            "Used as tiebreaker when both price and ETA are the same",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        RideApp.entries.forEach { app ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onAppChange(app) }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RadioButton(
+                    selected = currentApp == app,
+                    onClick = { onAppChange(app) }
+                )
+                Text(
+                    text = app.displayName,
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(start = 8.dp)
                 )

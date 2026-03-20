@@ -68,7 +68,8 @@ class ComparisonOverlay(
             pickMeEta = pickMeEta,
             uberEta = uberEta,
             pickMe = pickMe,
-            uber = uber
+            uber = uber,
+            decisionReason = data["decision_reason"]
         )
 
         val params = WindowManager.LayoutParams(
@@ -77,8 +78,7 @@ class ComparisonOverlay(
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_SECURE,
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
@@ -121,7 +121,8 @@ class ComparisonOverlay(
         pickMeEta: String?,
         uberEta: String?,
         pickMe: Double?,
-        uber: Double?
+        uber: Double?,
+        decisionReason: String?
     ): View {
         val context = service
 
@@ -177,9 +178,11 @@ class ComparisonOverlay(
             card.addView(buildPriceRow("Uber", "Rs $uberPrice", uberEta, isWinner))
         }
 
-        // Savings line
-        if (pickMe != null && uber != null) {
-            val savings = kotlin.math.abs(pickMe - uber)
+        // Savings line — use the pre-computed reason from the orchestrator
+        val savingsText = decisionReason?.let {
+            it.replaceFirstChar { c -> c.uppercaseChar() }
+        }
+        if (savingsText != null) {
             card.addView(View(context).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, dpToPx(1)
@@ -187,7 +190,7 @@ class ComparisonOverlay(
                 setBackgroundColor(Color.parseColor("#333355"))
             })
             card.addView(TextView(context).apply {
-                text = "You save Rs ${String.format("%.0f", savings)}"
+                text = savingsText
                 setTextColor(Color.parseColor("#4CAF50"))
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
                 setTypeface(null, Typeface.BOLD)

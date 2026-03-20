@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.jayathu.automata.data.db.AutomataDatabase
 import com.jayathu.automata.data.PreferencesManager
 import com.jayathu.automata.data.model.DecisionMode
+import com.jayathu.automata.data.model.RideApp
 import com.jayathu.automata.data.model.SavedLocation
 import com.jayathu.automata.data.model.TaskConfig
 import com.jayathu.automata.data.repository.AutomataRepository
@@ -73,6 +74,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _notificationSound = MutableStateFlow(true)
     val notificationSound: StateFlow<Boolean> = _notificationSound.asStateFlow()
 
+    private val _preferredApp = MutableStateFlow(RideApp.PICKME)
+    val preferredApp: StateFlow<RideApp> = _preferredApp.asStateFlow()
+
+    private val _showRunWarning = MutableStateFlow(true)
+    val showRunWarning: StateFlow<Boolean> = _showRunWarning.asStateFlow()
+
     private var controlOverlay: AutomationControlOverlay? = null
 
     fun setAutoEnableLocation(enabled: Boolean) {
@@ -115,6 +122,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _notificationSound.value = enabled
     }
 
+    fun setPreferredApp(app: RideApp) {
+        preferencesManager.preferredApp = app
+        _preferredApp.value = app
+    }
+
+    fun setShowRunWarning(show: Boolean) {
+        preferencesManager.showRunWarning = show
+        _showRunWarning.value = show
+    }
+
     val taskConfigs: StateFlow<List<TaskConfig>> = repository.getAllTaskConfigs()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -136,6 +153,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _autoCloseApps.value = preferencesManager.autoCloseApps
         _defaultDecisionMode.value = preferencesManager.defaultDecisionMode
         _notificationSound.value = preferencesManager.notificationSound
+        _preferredApp.value = preferencesManager.preferredApp
+        _showRunWarning.value = preferencesManager.showRunWarning
 
         // Observe accessibility service state changes for notification updates
         viewModelScope.launch {
@@ -237,11 +256,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val autoClose = _autoCloseApps.value
         val bypassSomeoneElse = _autoBypassSomeoneElse.value
 
+        val preferredApp = _preferredApp.value
         val comparisonOverlay = if (showOverlay) ComparisonOverlay(service, overlayDuration * 1000L) else null
         val orchestrator = RideOrchestrator(
             context = context,
             autoBypassSomeoneElse = bypassSomeoneElse,
             autoCloseApps = autoClose,
+            preferredApp = preferredApp,
             onComparisonReady = { comparisonData ->
                 comparisonOverlay?.show(comparisonData)
                 notificationManager.showComparisonPopup(comparisonData, soundEnabled)

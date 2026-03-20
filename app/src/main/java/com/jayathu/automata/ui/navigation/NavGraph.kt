@@ -34,11 +34,14 @@ fun AutomataNavGraph(
             val automationState by viewModel.automationState.collectAsState()
             val dumpCountdown by viewModel.dumpCountdown.collectAsState()
             val debugMode by viewModel.debugMode.collectAsState()
+            val showRunWarning by viewModel.showRunWarning.collectAsState()
             DashboardScreen(
                 taskConfigs = taskConfigs,
                 automationState = automationState,
                 dumpCountdown = dumpCountdown,
                 debugMode = debugMode,
+                showRunWarning = showRunWarning,
+                onDismissRunWarning = { viewModel.setShowRunWarning(false) },
                 onAddTask = { navController.navigate(Routes.NEW_TASK) },
                 onEditTask = { id -> navController.navigate(Routes.editTask(id)) },
                 onGoTask = { config -> viewModel.runAutomation(config) },
@@ -107,6 +110,7 @@ fun AutomataNavGraph(
             val autoCloseApps by viewModel.autoCloseApps.collectAsState()
             val defaultDecisionMode by viewModel.defaultDecisionMode.collectAsState()
             val notificationSound by viewModel.notificationSound.collectAsState()
+            val preferredApp by viewModel.preferredApp.collectAsState()
             SettingsScreen(
                 savedLocations = savedLocations,
                 autoEnableLocation = autoEnableLocation,
@@ -117,6 +121,7 @@ fun AutomataNavGraph(
                 autoCloseApps = autoCloseApps,
                 defaultDecisionMode = defaultDecisionMode,
                 notificationSound = notificationSound,
+                preferredApp = preferredApp,
                 onAutoEnableLocationChange = { viewModel.setAutoEnableLocation(it) },
                 onDebugModeChange = { viewModel.setDebugMode(it) },
                 onAutoBypassSomeoneElseChange = { viewModel.setAutoBypassSomeoneElse(it) },
@@ -125,6 +130,7 @@ fun AutomataNavGraph(
                 onAutoCloseAppsChange = { viewModel.setAutoCloseApps(it) },
                 onDefaultDecisionModeChange = { viewModel.setDefaultDecisionMode(it) },
                 onNotificationSoundChange = { viewModel.setNotificationSound(it) },
+                onPreferredAppChange = { viewModel.setPreferredApp(it) },
                 onAddLocation = { viewModel.addSavedLocation(it) },
                 onDeleteLocation = { viewModel.deleteSavedLocation(it) },
                 onBack = { navController.popBackStack() }

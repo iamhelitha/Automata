@@ -3,6 +3,7 @@ package com.jayathu.automata.data
 import android.content.Context
 import android.content.SharedPreferences
 import com.jayathu.automata.data.model.DecisionMode
+import com.jayathu.automata.data.model.RideApp
 
 class PreferencesManager(context: Context) {
 
@@ -16,6 +17,8 @@ class PreferencesManager(context: Context) {
         private const val KEY_AUTO_CLOSE_APPS = "auto_close_apps"
         private const val KEY_DEFAULT_DECISION_MODE = "default_decision_mode"
         private const val KEY_NOTIFICATION_SOUND = "notification_sound"
+        private const val KEY_PREFERRED_APP = "preferred_app"
+        private const val KEY_SHOW_RUN_WARNING = "show_run_warning"
     }
 
     private val prefs: SharedPreferences =
@@ -56,4 +59,16 @@ class PreferencesManager(context: Context) {
     var notificationSound: Boolean
         get() = prefs.getBoolean(KEY_NOTIFICATION_SOUND, true)
         set(value) = prefs.edit().putBoolean(KEY_NOTIFICATION_SOUND, value).apply()
+
+    var showRunWarning: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_RUN_WARNING, true)
+        set(value) = prefs.edit().putBoolean(KEY_SHOW_RUN_WARNING, value).apply()
+
+    var preferredApp: RideApp
+        get() = try {
+            RideApp.valueOf(prefs.getString(KEY_PREFERRED_APP, RideApp.PICKME.name)!!)
+        } catch (_: Exception) {
+            RideApp.PICKME
+        }
+        set(value) = prefs.edit().putString(KEY_PREFERRED_APP, value.name).apply()
 }
