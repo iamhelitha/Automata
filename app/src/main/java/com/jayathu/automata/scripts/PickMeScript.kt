@@ -145,7 +145,7 @@ object PickMeScript {
         name = "Resume PickMe",
         waitCondition = { true },
         timeoutMs = 5_000,
-        delayAfterMs = 2000,
+        delayAfterMs = 1000,
         action = { _, _ ->
             if (AutomationEngine.bringToForeground(context, PACKAGE)) {
                 Log.i(TAG, "Bringing PickMe back to foreground")
@@ -160,7 +160,7 @@ object PickMeScript {
         name = "Launch PickMe",
         waitCondition = { true },
         timeoutMs = 5_000,
-        delayAfterMs = 3000,
+        delayAfterMs = 2000,
         action = { _, _ ->
             if (AutomationEngine.launchApp(context, PACKAGE)) {
                 StepResult.Success
@@ -176,7 +176,7 @@ object PickMeScript {
             root.packageName?.toString() == PACKAGE
         },
         timeoutMs = 10_000,
-        delayAfterMs = 1500,
+        delayAfterMs = 500,
         action = { _, _ ->
             Log.i(TAG, "PickMe home screen detected")
             StepResult.Success
@@ -318,7 +318,7 @@ object PickMeScript {
             root.packageName?.toString() == PACKAGE
         },
         timeoutMs = 15_000,
-        delayAfterMs = 1500,
+        delayAfterMs = 500,
         maxRetries = 3,
         action = { _, _ ->
             val service = AutomataAccessibilityService.instance.value
@@ -345,16 +345,18 @@ object PickMeScript {
             Log.i(TAG, "Tapping search bar at (${screenCenterX(service)}, $tapY)")
             ActionExecutor.tapAtCoordinates(service, screenCenterX(service), tapY)
 
-            // Verify PICKUP/DROP screen appeared
-            kotlinx.coroutines.delay(2000)
-            val newOcr = ScreenReader.captureAndRead(service)
-            if (newOcr != null) {
-                Log.i(TAG, "After tap: ${newOcr.fullText.take(200)}")
-                if (newOcr.fullText.contains("PICKUP", ignoreCase = false) ||
-                    newOcr.fullText.contains("DROP", ignoreCase = false)) {
-                    Log.i(TAG, "PICKUP/DROP screen opened!")
-                    return@AutomationStep StepResult.Success
+            // Poll for PICKUP/DROP screen instead of fixed delay
+            val pollStart = System.currentTimeMillis()
+            while (System.currentTimeMillis() - pollStart < 3000) {
+                val newOcr = ScreenReader.captureAndRead(service)
+                if (newOcr != null) {
+                    if (newOcr.fullText.contains("PICKUP", ignoreCase = false) ||
+                        newOcr.fullText.contains("DROP", ignoreCase = false)) {
+                        Log.i(TAG, "PICKUP/DROP screen opened after ${System.currentTimeMillis() - pollStart}ms")
+                        return@AutomationStep StepResult.Success
+                    }
                 }
+                kotlinx.coroutines.delay(300)
             }
 
             StepResult.Retry("PICKUP/DROP screen not detected after tap")
@@ -371,7 +373,7 @@ object PickMeScript {
             root.packageName?.toString() == PACKAGE
         },
         timeoutMs = 15_000,
-        delayAfterMs = 2500,
+        delayAfterMs = 500,
         maxRetries = 4,
         action = { root, _ ->
             val service = AutomataAccessibilityService.instance.value
@@ -409,7 +411,25 @@ object PickMeScript {
                 ActionExecutor.clearText(pickupField)
                 if (ActionExecutor.setText(pickupField, pickupAddress)) {
                     Log.i(TAG, "Pickup address set: $pickupAddress")
-                    kotlinx.coroutines.delay(2000)
+                    // Poll for search suggestions instead of fixed delay
+                    val pollStart = System.currentTimeMillis()
+                    val skipTexts = setOf("PICKUP", "DROP", "Saved", "Set location",
+                        "Book for", "One way", "Return trip", "Your Location", "Where are you going")
+                    while (System.currentTimeMillis() - pollStart < 2500) {
+                        val pollOcr = ScreenReader.captureAndRead(service)
+                        if (pollOcr != null) {
+                            val hasSuggestions = pollOcr.blocks.any { block ->
+                                val top = block.bounds?.top ?: 0
+                                top in 700..1500 && block.text.length > 3 &&
+                                skipTexts.none { block.text.contains(it, ignoreCase = true) }
+                            }
+                            if (hasSuggestions) {
+                                Log.i(TAG, "Pickup suggestions appeared after ${System.currentTimeMillis() - pollStart}ms")
+                                break
+                            }
+                        }
+                        kotlinx.coroutines.delay(300)
+                    }
                     return@AutomationStep StepResult.Success
                 }
             }
@@ -427,7 +447,7 @@ object PickMeScript {
             root.packageName?.toString() == PACKAGE
         },
         timeoutMs = 10_000,
-        delayAfterMs = 3000,
+        delayAfterMs = 1000,
         maxRetries = 4,
         action = { _, _ ->
             val service = AutomataAccessibilityService.instance.value
@@ -487,7 +507,7 @@ object PickMeScript {
             root.packageName?.toString() == PACKAGE
         },
         timeoutMs = 15_000,
-        delayAfterMs = 2500,
+        delayAfterMs = 500,
         maxRetries = 4,
         action = { root, _ ->
             val service = AutomataAccessibilityService.instance.value
@@ -544,10 +564,24 @@ object PickMeScript {
                 ActionExecutor.clearText(dropField)
                 if (ActionExecutor.setText(dropField, destination)) {
                     Log.i(TAG, "Destination text set successfully")
-                    kotlinx.coroutines.delay(2000)
-                    val afterOcr = ScreenReader.captureAndRead(service)
-                    if (afterOcr != null) {
-                        Log.i(TAG, "After entering destination: ${afterOcr.fullText.take(300)}")
+                    // Poll for search suggestions instead of fixed delay
+                    val pollStart = System.currentTimeMillis()
+                    val skipTexts = setOf("PICKUP", "DROP", "Saved", "Set location",
+                        "Book for", "One way", "Return trip", "Your Location", "Where are you going")
+                    while (System.currentTimeMillis() - pollStart < 2500) {
+                        val pollOcr = ScreenReader.captureAndRead(service)
+                        if (pollOcr != null) {
+                            val hasSuggestions = pollOcr.blocks.any { block ->
+                                val top = block.bounds?.top ?: 0
+                                top in 700..1500 && block.text.length > 3 &&
+                                skipTexts.none { block.text.contains(it, ignoreCase = true) }
+                            }
+                            if (hasSuggestions) {
+                                Log.i(TAG, "Destination suggestions appeared after ${System.currentTimeMillis() - pollStart}ms")
+                                break
+                            }
+                        }
+                        kotlinx.coroutines.delay(300)
                     }
                     return@AutomationStep StepResult.Success
                 }
@@ -567,7 +601,7 @@ object PickMeScript {
             root.packageName?.toString() == PACKAGE
         },
         timeoutMs = 10_000,
-        delayAfterMs = 4000,
+        delayAfterMs = 1500,
         maxRetries = 4,
         action = { _, _ ->
             val service = AutomataAccessibilityService.instance.value
@@ -631,7 +665,6 @@ object PickMeScript {
             root.packageName?.toString() == PACKAGE
         },
         timeoutMs = 20_000,
-        delayAfterMs = 1500,
         maxRetries = 6,
         action = { _, _ ->
             val service = AutomataAccessibilityService.instance.value
@@ -641,8 +674,8 @@ object PickMeScript {
             if (ocr != null) {
                 Log.i(TAG, "Checking for ride options: ${ocr.fullText.take(400)}")
 
-                val hasPrice = ocr.fullText.contains("Rs", ignoreCase = true) ||
-                        ocr.fullText.contains("LKR", ignoreCase = true)
+                val pricePattern = Regex("""(?:Rs\.?|LKR)\s*(\d[\d,.]*)""", RegexOption.IGNORE_CASE)
+                val hasPrice = pricePattern.containsMatchIn(ocr.fullText)
                 val hasVehicle = ocr.fullText.contains("Bike", ignoreCase = true) ||
                         ocr.fullText.contains("Tuk", ignoreCase = true) ||
                         ocr.fullText.contains("Car", ignoreCase = true) ||
@@ -651,7 +684,21 @@ object PickMeScript {
                 val hasBookButton = ocr.fullText.contains("Book", ignoreCase = true)
 
                 if (hasPrice || (hasVehicle && hasBookButton)) {
-                    Log.i(TAG, "Ride options screen detected! hasPrice=$hasPrice hasVehicle=$hasVehicle hasBook=$hasBookButton")
+                    // Stability check: take a second read and confirm prices match
+                    val firstPrices = pricePattern.findAll(ocr.fullText).map { it.groupValues[1] }.toList()
+                    kotlinx.coroutines.delay(300)
+                    val ocr2 = ScreenReader.captureAndRead(service)
+                    if (ocr2 != null) {
+                        val secondPrices = pricePattern.findAll(ocr2.fullText).map { it.groupValues[1] }.toList()
+                        if (firstPrices == secondPrices) {
+                            Log.i(TAG, "Ride options stable! Prices match across two reads: $firstPrices")
+                            return@AutomationStep StepResult.Success
+                        }
+                        Log.i(TAG, "Prices changed between reads ($firstPrices → $secondPrices), waiting to stabilize")
+                        return@AutomationStep StepResult.Retry("Prices still loading")
+                    }
+                    // Second read failed, trust first
+                    Log.i(TAG, "Ride options screen detected (single read)")
                     return@AutomationStep StepResult.Success
                 }
 
@@ -862,7 +909,6 @@ object PickMeScript {
         },
         timeoutMs = 15_000,
         maxRetries = 5,
-        delayBeforeMs = 500,
         action = { _, stepContext ->
             val service = AutomataAccessibilityService.instance.value
                 ?: return@AutomationStep StepResult.Failure("No accessibility service")
@@ -996,6 +1042,39 @@ object PickMeScript {
                     if (eta != null) {
                         stepContext.collectedData["pickme_eta"] = eta.toString()
                         Log.i(TAG, "PickMe ETA for $rideType: $eta min (X-proximity)")
+                    }
+                }
+
+                // Stability check: confirm price with a second read
+                kotlinx.coroutines.delay(300)
+                val ocr2 = ScreenReader.captureAndRead(service)
+                if (ocr2 != null) {
+                    val secondPrices = mutableListOf<Pair<String, Rect?>>()
+                    for (block in ocr2.blocks) {
+                        val cleanedText = block.text
+                            .replace("l", "1").replace("O", "0").replace("I", "1")
+                        val matches2 = pricePattern.findAll(cleanedText).toList()
+                            .ifEmpty { pricePattern.findAll(block.text).toList() }
+                        for (m in matches2) {
+                            val rp = ScreenReader.sanitizePrice(m.groupValues[1])
+                            secondPrices.add(normalizePrice(rp) to block.bounds)
+                        }
+                    }
+                    if (secondPrices.isNotEmpty() && targetLabel != null) {
+                        val targetX2 = targetLabel.second
+                        val targetY2 = targetLabel.third
+                        val pricesBelow2 = secondPrices.filter { (_, bounds) ->
+                            bounds != null && bounds.centerY() > targetY2
+                        }
+                        val candidates2 = pricesBelow2.ifEmpty { secondPrices.filter { it.second != null } }
+                        val matched2 = candidates2.minByOrNull { (_, bounds) ->
+                            if (bounds != null) kotlin.math.abs(bounds.centerX() - targetX2) else Int.MAX_VALUE
+                        }
+                        if (matched2 != null && matched2.first != price) {
+                            Log.w(TAG, "Price changed between reads: $price → ${matched2.first}, retrying")
+                            return@AutomationStep StepResult.Retry("Price unstable")
+                        }
+                        Log.i(TAG, "Price confirmed stable: Rs $price")
                     }
                 }
 

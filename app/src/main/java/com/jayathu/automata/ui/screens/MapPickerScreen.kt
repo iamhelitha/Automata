@@ -46,14 +46,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.google.android.gms.maps.model.CameraPosition
-import com.google.android.gms.maps.model.LatLng
-import com.google.maps.android.compose.GoogleMap
-import com.google.maps.android.compose.Marker
-import com.google.maps.android.compose.MarkerState
-import com.google.maps.android.compose.rememberCameraPositionState
+import android.annotation.SuppressLint
+import android.webkit.JavascriptInterface
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import com.google.openlocationcode.OpenLocationCode
 import com.jayathu.automata.data.model.MapProvider
 import kotlinx.coroutines.Dispatchers
@@ -76,8 +75,9 @@ private const val DEFAULT_ZOOM = 15.0
 
 private data class SearchResult(
     val displayName: String,
-    val lat: Double,
-    val lng: Double
+    val lat: Double = 0.0,
+    val lng: Double = 0.0,
+    val placeId: String? = null // Used by Google Places; resolved to lat/lng on tap
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -88,8 +88,11 @@ fun MapPickerScreen(
     onLocationPicked: (plusCode: String) -> Unit,
     onBack: () -> Unit
 ) {
+    val focusManager = LocalFocusManager.current
     var selectedLat by remember { mutableStateOf<Double?>(null) }
     var selectedLng by remember { mutableStateOf<Double?>(null) }
+    // Flag to suppress re-search when setting searchQuery programmatically
+    var suppressSearch by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -102,6 +105,10 @@ fun MapPickerScreen(
     // Callback to move the map — set by the active map composable
     var moveMapTo by remember { mutableStateOf<((Double, Double) -> Unit)?>(null) }
     var mapLoaded by remember { mutableStateOf(false) }
+
+    // Google Places search functions — set by GoogleMapView when WebView is ready
+    var googleSearch by remember { mutableStateOf<((String) -> Unit)?>(null) }
+    var googleResolvePlace by remember { mutableStateOf<((String) -> Unit)?>(null) }
 
     // Fall back to OSM if Google Maps selected but no API key
     val effectiveProvider = if (mapProvider == MapProvider.GOOGLE_MAPS && googleMapsApiKey.isBlank()) {
@@ -177,6 +184,20 @@ fun MapPickerScreen(
                         onMapReady = { moveFn ->
                             moveMapTo = moveFn
                             mapLoaded = true
+                        },
+                        onSearchReady = { searchFn, resolveFn ->
+                            googleSearch = searchFn
+                            googleResolvePlace = resolveFn
+                        },
+                        onSearchResults = { results ->
+                            searchResults = results
+                            showResults = results.isNotEmpty()
+                            isSearching = false
+                        },
+                        onPlaceResolved = { lat, lng, name ->
+                            selectedLat = lat
+                            selectedLng = lng
+                            showResults = false
                         }
                     )
                 }
@@ -253,11 +274,22 @@ fun MapPickerScreen(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable {
-                                            selectedLat = result.lat
-                                            selectedLng = result.lng
-                                            searchQuery = result.displayName
-                                            showResults = false
-                                            moveMapTo?.invoke(result.lat, result.lng)
+                                            focusManager.clearFocus()
+                                            if (result.placeId != null) {
+                                                // Google Places result — resolve coordinates via JS
+                                                showResults = false
+                                                suppressSearch = true
+                                                searchQuery = result.displayName
+                                                googleResolvePlace?.invoke(result.placeId)
+                                            } else {
+                                                // Nominatim result — already has coordinates
+                                                selectedLat = result.lat
+                                                selectedLng = result.lng
+                                                suppressSearch = true
+                                                searchQuery = result.displayName
+                                                showResults = false
+                                                moveMapTo?.invoke(result.lat, result.lng)
+                                            }
                                         }
                                         .padding(horizontal = 16.dp, vertical = 12.dp),
                                     maxLines = 2
@@ -291,6 +323,10 @@ fun MapPickerScreen(
 
     // Trigger search when query changes (with debounce)
     LaunchedEffect(searchQuery) {
+        if (suppressSearch) {
+            suppressSearch = false
+            return@LaunchedEffect
+        }
         if (searchQuery.length < 3) {
             searchResults = emptyList()
             showResults = false
@@ -299,15 +335,23 @@ fun MapPickerScreen(
         // Simple debounce
         kotlinx.coroutines.delay(500)
         isSearching = true
-        try {
-            val results = searchNominatim(searchQuery)
-            searchResults = results
-            showResults = results.isNotEmpty()
-        } catch (_: Exception) {
-            searchResults = emptyList()
-            showResults = false
+
+        if (effectiveProvider == MapProvider.GOOGLE_MAPS && googleSearch != null) {
+            // Google Places Autocomplete via WebView JS bridge
+            // Results arrive asynchronously via onSearchResults callback
+            googleSearch?.invoke(searchQuery)
+        } else {
+            // Nominatim (OpenStreetMap) geocoding
+            try {
+                val results = searchNominatim(searchQuery)
+                searchResults = results
+                showResults = results.isNotEmpty()
+            } catch (_: Exception) {
+                searchResults = emptyList()
+                showResults = false
+            }
+            isSearching = false
         }
-        isSearching = false
     }
 }
 
@@ -419,59 +463,236 @@ private fun OsmMapView(
     }
 }
 
+@SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun GoogleMapView(
     apiKey: String,
     selectedLat: Double?,
     selectedLng: Double?,
     onLocationSelected: (Double, Double) -> Unit,
-    onMapReady: ((Double, Double) -> Unit) -> Unit
+    onMapReady: ((Double, Double) -> Unit) -> Unit,
+    onSearchReady: (search: (String) -> Unit, resolvePlace: (String) -> Unit) -> Unit,
+    onSearchResults: (List<SearchResult>) -> Unit,
+    onPlaceResolved: (lat: Double, lng: Double, name: String) -> Unit
 ) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    var webView by remember { mutableStateOf<WebView?>(null) }
 
-    // Set API key at runtime
-    LaunchedEffect(apiKey) {
-        try {
-            val appInfo = context.packageManager.getApplicationInfo(
-                context.packageName,
-                android.content.pm.PackageManager.GET_META_DATA
+    // Expose move and search functions to parent once WebView is ready
+    LaunchedEffect(webView) {
+        webView?.let { wv ->
+            onMapReady { lat, lng ->
+                wv.post {
+                    wv.evaluateJavascript("moveTo($lat, $lng)", null)
+                }
+            }
+            onSearchReady(
+                { query ->
+                    val escaped = query.replace("\\", "\\\\").replace("'", "\\'")
+                    wv.post {
+                        wv.evaluateJavascript("searchPlaces('$escaped')", null)
+                    }
+                },
+                { placeId ->
+                    val escaped = placeId.replace("\\", "\\\\").replace("'", "\\'")
+                    wv.post {
+                        wv.evaluateJavascript("resolvePlace('$escaped')", null)
+                    }
+                }
             )
-            appInfo.metaData?.putString("com.google.android.geo.API_KEY", apiKey)
-        } catch (_: Exception) { }
+        }
     }
 
-    val cameraPositionState = rememberCameraPositionState {
-        position = CameraPosition.fromLatLngZoom(
-            LatLng(DEFAULT_LAT, DEFAULT_LNG), DEFAULT_ZOOM.toFloat()
-        )
-    }
-
-    // Expose move function to parent
-    LaunchedEffect(Unit) {
-        onMapReady { lat, lng ->
-            scope.launch {
-                cameraPositionState.animate(
-                    com.google.android.gms.maps.CameraUpdateFactory.newLatLngZoom(
-                        LatLng(lat, lng), DEFAULT_ZOOM.toFloat()
-                    )
-                )
+    // Update marker when selection changes
+    LaunchedEffect(selectedLat, selectedLng, webView) {
+        if (selectedLat != null && selectedLng != null) {
+            webView?.post {
+                webView?.evaluateJavascript("setMarker($selectedLat, $selectedLng)", null)
             }
         }
     }
 
-    GoogleMap(
+    AndroidView(
         modifier = Modifier.fillMaxSize(),
-        cameraPositionState = cameraPositionState,
-        onMapClick = { latLng ->
-            onLocationSelected(latLng.latitude, latLng.longitude)
+        factory = { ctx ->
+            WebView(ctx).apply {
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                settings.allowContentAccess = true
+                settings.allowFileAccess = true
+                settings.allowFileAccessFromFileURLs = true
+                settings.allowUniversalAccessFromFileURLs = true
+
+                addJavascriptInterface(object {
+                    @JavascriptInterface
+                    fun onMapClick(lat: Double, lng: Double) {
+                        onLocationSelected(lat, lng)
+                    }
+
+                    @JavascriptInterface
+                    fun onMapLoaded() {
+                        // Map is ready
+                    }
+
+                    @JavascriptInterface
+                    fun onPlacesResults(json: String) {
+                        try {
+                            val arr = JSONArray(json)
+                            val results = mutableListOf<SearchResult>()
+                            for (i in 0 until arr.length()) {
+                                val obj = arr.getJSONObject(i)
+                                results.add(SearchResult(
+                                    displayName = obj.getString("name"),
+                                    placeId = obj.getString("placeId")
+                                ))
+                            }
+                            onSearchResults(results)
+                        } catch (e: Exception) {
+                            android.util.Log.e("GoogleMapWebView", "Failed to parse places results", e)
+                            onSearchResults(emptyList())
+                        }
+                    }
+
+                    @JavascriptInterface
+                    fun onPlaceResolved(lat: Double, lng: Double, name: String) {
+                        onPlaceResolved(lat, lng, name)
+                    }
+                }, "Android")
+
+                webViewClient = object : WebViewClient() {
+                    override fun onReceivedError(
+                        view: WebView?,
+                        request: android.webkit.WebResourceRequest?,
+                        error: android.webkit.WebResourceError?
+                    ) {
+                        android.util.Log.e("GoogleMapWebView", "WebView error: ${error?.description} (${error?.errorCode}), url=${request?.url}")
+                    }
+                }
+
+                webChromeClient = object : android.webkit.WebChromeClient() {
+                    override fun onConsoleMessage(msg: android.webkit.ConsoleMessage?): Boolean {
+                        android.util.Log.d("GoogleMapWebView", "JS: ${msg?.message()} [${msg?.sourceId()}:${msg?.lineNumber()}]")
+                        return true
+                    }
+                }
+
+                val html = buildGoogleMapsHtml(apiKey, DEFAULT_LAT, DEFAULT_LNG, DEFAULT_ZOOM)
+                val htmlFile = java.io.File(ctx.cacheDir, "google_map.html")
+                htmlFile.writeText(html)
+                loadUrl("file://${htmlFile.absolutePath}")
+
+                webView = this
+            }
         }
-    ) {
-        if (selectedLat != null && selectedLng != null) {
-            Marker(
-                state = MarkerState(position = LatLng(selectedLat, selectedLng)),
-                title = "Selected location"
-            )
+    )
+
+    DisposableEffect(Unit) {
+        onDispose {
+            webView?.destroy()
         }
     }
+}
+
+private fun buildGoogleMapsHtml(apiKey: String, lat: Double, lng: Double, zoom: Double): String {
+    return """
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<style>
+  * { margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #d0d0d0; }
+  #map { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: #b0b0b0; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script src="https://maps.googleapis.com/maps/api/js?key=$apiKey&libraries=places"></script>
+<script>
+  var map, marker, autocompleteService, placesService;
+  var mapDiv = document.getElementById('map');
+  mapDiv.style.width = window.innerWidth + 'px';
+  mapDiv.style.height = window.innerHeight + 'px';
+
+  try {
+    map = new google.maps.Map(mapDiv, {
+      center: { lat: $lat, lng: $lng },
+      zoom: $zoom,
+      mapTypeControl: false,
+      streetViewControl: false,
+      fullscreenControl: false,
+      zoomControl: true
+    });
+
+    autocompleteService = new google.maps.places.AutocompleteService();
+    placesService = new google.maps.places.PlacesService(map);
+
+    map.addListener('click', function(e) {
+      Android.onMapClick(e.latLng.lat(), e.latLng.lng());
+    });
+
+    map.addListener('tilesloaded', function() {
+      Android.onMapLoaded();
+    });
+
+  } catch(e) {
+    console.log('MAP_ERROR: ' + e.message);
+  }
+
+  function setMarker(lat, lng) {
+    if (marker) marker.setMap(null);
+    marker = new google.maps.Marker({
+      position: { lat: lat, lng: lng },
+      map: map,
+      title: 'Selected location'
+    });
+  }
+
+  function moveTo(lat, lng) {
+    if (map) {
+      map.panTo({ lat: lat, lng: lng });
+      map.setZoom($zoom);
+    }
+  }
+
+  function searchPlaces(query) {
+    if (!autocompleteService) return;
+    autocompleteService.getPlacePredictions({
+      input: query,
+      locationBias: map.getBounds() || new google.maps.Circle({
+        center: map.getCenter(),
+        radius: 50000
+      })
+    }, function(predictions, status) {
+      if (status !== 'OK' || !predictions) {
+        Android.onPlacesResults('[]');
+        return;
+      }
+      var results = predictions.slice(0, 5).map(function(p) {
+        return { name: p.description, placeId: p.place_id };
+      });
+      Android.onPlacesResults(JSON.stringify(results));
+    });
+  }
+
+  function resolvePlace(placeId) {
+    if (!placesService) return;
+    placesService.getDetails({
+      placeId: placeId,
+      fields: ['geometry', 'name']
+    }, function(place, status) {
+      if (status === 'OK' && place && place.geometry) {
+        var lat = place.geometry.location.lat();
+        var lng = place.geometry.location.lng();
+        setMarker(lat, lng);
+        map.panTo({ lat: lat, lng: lng });
+        map.setZoom($zoom);
+        Android.onPlaceResolved(lat, lng, place.name || '');
+      }
+    });
+  }
+</script>
+</body>
+</html>
+""".trimIndent()
 }

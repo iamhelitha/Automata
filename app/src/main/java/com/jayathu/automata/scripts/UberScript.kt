@@ -155,7 +155,7 @@ object UberScript {
         name = "Resume Uber",
         waitCondition = { true },
         timeoutMs = 5_000,
-        delayAfterMs = 2000,
+        delayAfterMs = 1000,
         action = { _, _ ->
             if (AutomationEngine.bringToForeground(context, PACKAGE)) {
                 Log.i(TAG, "Bringing Uber back to foreground")
@@ -322,7 +322,7 @@ object UberScript {
         name = "Launch Uber",
         waitCondition = { true },
         timeoutMs = 5_000,
-        delayAfterMs = 3000,
+        delayAfterMs = 2000,
         action = { _, _ ->
             if (AutomationEngine.launchApp(context, PACKAGE)) {
                 StepResult.Success
@@ -342,7 +342,7 @@ object UberScript {
             root.packageName?.toString() == PACKAGE
         },
         timeoutMs = 5_000,
-        delayAfterMs = 1500,
+        delayAfterMs = 500,
         action = { root, _ ->
             val service = AutomataAccessibilityService.instance.value
                 ?: return@AutomationStep StepResult.Failure("No accessibility service")
@@ -391,7 +391,7 @@ object UberScript {
             root.packageName?.toString() == PACKAGE
         },
         timeoutMs = 10_000,
-        delayAfterMs = 2000,
+        delayAfterMs = 800,
         maxRetries = 3,
         action = { root, _ ->
             val service = AutomataAccessibilityService.instance.value
@@ -436,7 +436,7 @@ object UberScript {
             NodeFinder.hasNode(root) { it.isEditable }
         },
         timeoutMs = 10_000,
-        delayAfterMs = 2000,
+        delayAfterMs = 500,
         maxRetries = 3,
         action = { root, _ ->
             // Find ALL editable fields — pickup is the first one (has current location text)
@@ -457,8 +457,32 @@ object UberScript {
                 ActionExecutor.clearText(pickupField)
                 if (ActionExecutor.setTextWithRetrigger(pickupField, pickupAddress)) {
                     Log.i(TAG, "Pickup address set: $pickupAddress")
-                    // Wait for search results to load before the next step selects one
-                    kotlinx.coroutines.delay(1500)
+                    // Poll for search suggestions instead of fixed delay
+                    val svc = AutomataAccessibilityService.instance.value
+                    if (svc != null) {
+                        val pollStart = System.currentTimeMillis()
+                        val screenHeight = ActionExecutor.getScreenSize(svc).second
+                        val editFields = NodeFinder.findAllNodesRecursive(svc.getRootNode() ?: root) { it.isEditable }
+                        val fieldsBottom = editFields.maxOfOrNull { f ->
+                            val r = android.graphics.Rect(); f.getBoundsInScreen(r); r.bottom
+                        } ?: (screenHeight * 0.30).toInt()
+                        val minY = fieldsBottom + 20
+                        val maxY = (screenHeight * 0.65).toInt()
+                        while (System.currentTimeMillis() - pollStart < 2000) {
+                            val pollOcr = ScreenReader.captureAndRead(svc)
+                            if (pollOcr != null) {
+                                val hasSuggestions = pollOcr.blocks.any { block ->
+                                    val top = block.bounds?.top ?: 0
+                                    top in minY..maxY && block.text.length > 3
+                                }
+                                if (hasSuggestions) {
+                                    Log.i(TAG, "Pickup suggestions appeared after ${System.currentTimeMillis() - pollStart}ms")
+                                    break
+                                }
+                            }
+                            kotlinx.coroutines.delay(300)
+                        }
+                    }
                     return@AutomationStep StepResult.Success
                 }
             }
@@ -476,7 +500,7 @@ object UberScript {
             root.packageName?.toString() == PACKAGE
         },
         timeoutMs = 15_000,
-        delayAfterMs = 3000,
+        delayAfterMs = 1000,
         maxRetries = 5,
         action = { root, _ ->
             val service = AutomataAccessibilityService.instance.value
@@ -627,7 +651,7 @@ object UberScript {
             root.packageName?.toString() == PACKAGE
         },
         timeoutMs = 20_000,
-        delayAfterMs = 2000,
+        delayAfterMs = 500,
         maxRetries = 7,
         action = { root, stepContext ->
             val service = AutomataAccessibilityService.instance.value
@@ -757,8 +781,29 @@ object UberScript {
                 if (ActionExecutor.setTextWithRetrigger(activeField, destination)) {
                     Log.i(TAG, "Destination text set: $destination")
                     stepContext.collectedData["uber_dest_typed"] = "true"
-                    // Wait for search results to load
-                    kotlinx.coroutines.delay(1500)
+                    // Poll for search suggestions instead of fixed delay
+                    val pollStart = System.currentTimeMillis()
+                    val screenHeight = ActionExecutor.getScreenSize(service).second
+                    val freshEditFields = NodeFinder.findAllNodesRecursive(service.getRootNode() ?: root) { it.isEditable }
+                    val fieldsBottom = freshEditFields.maxOfOrNull { f ->
+                        val r = android.graphics.Rect(); f.getBoundsInScreen(r); r.bottom
+                    } ?: (screenHeight * 0.30).toInt()
+                    val suggestMinY = fieldsBottom + 20
+                    val suggestMaxY = (screenHeight * 0.65).toInt()
+                    while (System.currentTimeMillis() - pollStart < 2000) {
+                        val pollOcr = ScreenReader.captureAndRead(service)
+                        if (pollOcr != null) {
+                            val hasSuggestions = pollOcr.blocks.any { block ->
+                                val top = block.bounds?.top ?: 0
+                                top in suggestMinY..suggestMaxY && block.text.length > 3
+                            }
+                            if (hasSuggestions) {
+                                Log.i(TAG, "Destination suggestions appeared after ${System.currentTimeMillis() - pollStart}ms")
+                                break
+                            }
+                        }
+                        kotlinx.coroutines.delay(300)
+                    }
                     return@AutomationStep StepResult.Success
                 } else {
                     Log.w(TAG, "setText failed — retrying")
@@ -775,7 +820,7 @@ object UberScript {
             root.packageName?.toString() == PACKAGE
         },
         timeoutMs = 10_000,
-        delayAfterMs = 3000,
+        delayAfterMs = 1000,
         maxRetries = 4,
         action = { root, stepContext ->
             val service = AutomataAccessibilityService.instance.value
@@ -973,7 +1018,6 @@ object UberScript {
             root.packageName?.toString() == PACKAGE
         },
         timeoutMs = 20_000,
-        delayAfterMs = 1500,
         maxRetries = 6,
         action = { _, _ ->
             val service = AutomataAccessibilityService.instance.value
@@ -983,19 +1027,32 @@ object UberScript {
             if (ocr != null) {
                 Log.i(TAG, "Checking for ride options: ${ocr.fullText.take(400)}")
 
-                val hasPrice = ocr.fullText.contains("LKR", ignoreCase = true) ||
-                        ocr.fullText.contains("Rs", ignoreCase = true)
+                val pricePattern = Regex("""(?:LKR|[Rr]s\.?)\s*(\d[\d,.]*)""", RegexOption.IGNORE_CASE)
+                val hasPrice = pricePattern.containsMatchIn(ocr.fullText)
                 val hasVehicle = ocr.fullText.contains("Tuk", ignoreCase = true) ||
                         ocr.fullText.contains("Moto", ignoreCase = true) ||
                         ocr.fullText.contains("Zip", ignoreCase = true)
-                val hasChoose = ocr.fullText.contains("Choose", ignoreCase = true)
 
                 if (hasPrice && hasVehicle) {
-                    Log.i(TAG, "Ride options detected! hasPrice=$hasPrice hasVehicle=$hasVehicle hasChoose=$hasChoose")
+                    // Stability check: take a second read and confirm prices match
+                    val firstPrices = pricePattern.findAll(ocr.fullText).map { it.groupValues[1] }.toList()
+                    kotlinx.coroutines.delay(300)
+                    val ocr2 = ScreenReader.captureAndRead(service)
+                    if (ocr2 != null) {
+                        val secondPrices = pricePattern.findAll(ocr2.fullText).map { it.groupValues[1] }.toList()
+                        if (firstPrices == secondPrices) {
+                            Log.i(TAG, "Ride options stable! Prices match across two reads: $firstPrices")
+                            return@AutomationStep StepResult.Success
+                        }
+                        Log.i(TAG, "Prices changed between reads ($firstPrices → $secondPrices), waiting to stabilize")
+                        return@AutomationStep StepResult.Retry("Prices still loading")
+                    }
+                    // Second read failed, trust first
+                    Log.i(TAG, "Ride options detected (single read)")
                     return@AutomationStep StepResult.Success
                 }
 
-                Log.i(TAG, "Not ride options yet. hasPrice=$hasPrice hasVehicle=$hasVehicle hasChoose=$hasChoose")
+                Log.i(TAG, "Not ride options yet. hasPrice=$hasPrice hasVehicle=$hasVehicle")
             }
 
             StepResult.Retry("Ride options not visible yet")
@@ -1013,7 +1070,6 @@ object UberScript {
         },
         timeoutMs = 15_000,
         maxRetries = 5,
-        delayBeforeMs = 500,
         action = { _, stepContext ->
             val service = AutomataAccessibilityService.instance.value
                 ?: return@AutomationStep StepResult.Failure("No accessibility service")
@@ -1069,6 +1125,38 @@ object UberScript {
                 Log.i(TAG, "Matched price for '$uberRideType': LKR $price " +
                         "(Y-distance=${matched.second?.let { kotlin.math.abs(it.centerY() - rideBounds.centerY()) }}, " +
                         "raw: '${matched.third}')")
+
+                // Stability check: confirm price with a second read
+                kotlinx.coroutines.delay(300)
+                val ocr2 = ScreenReader.captureAndRead(service)
+                if (ocr2 != null) {
+                    val secondPrices = mutableListOf<Triple<String, Rect?, String>>()
+                    for (block in ocr2.blocks) {
+                        val text = block.text
+                        val m = pricePattern.find(text)
+                            ?: run {
+                                val cleaned = text.replace(Regex("(?<=\\d)[lI](?=\\d)")) { "1" }
+                                    .replace(Regex("(?<=\\d)O(?=\\d)")) { "0" }
+                                pricePattern.find(cleaned)
+                            }
+                        if (m != null) {
+                            val rp = ScreenReader.sanitizePrice(m.groupValues[1])
+                            secondPrices.add(Triple(normalizePrice(rp), block.bounds, text))
+                        }
+                    }
+                    val rideTypeBlocks2 = ScreenReader.findTextBlocks(ocr2, uberRideType)
+                    if (rideTypeBlocks2.isNotEmpty() && rideTypeBlocks2.first().bounds != null && secondPrices.isNotEmpty()) {
+                        val rideBounds2 = rideTypeBlocks2.first().bounds!!
+                        val matched2 = secondPrices.minByOrNull { (_, bounds, _) ->
+                            if (bounds != null) kotlin.math.abs(bounds.centerY() - rideBounds2.centerY()) else Int.MAX_VALUE
+                        }!!
+                        if (matched2.first != price) {
+                            Log.w(TAG, "Price changed between reads: $price → ${matched2.first}, retrying")
+                            return@AutomationStep StepResult.Retry("Price unstable")
+                        }
+                        Log.i(TAG, "Price confirmed stable: LKR $price")
+                    }
+                }
 
                 // Also grab ETA on the same row
                 val etaPattern = Regex("""(\d+)\s*min""", RegexOption.IGNORE_CASE)

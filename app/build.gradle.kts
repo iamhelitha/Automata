@@ -75,7 +75,6 @@ dependencies {
     // Map
     implementation(libs.osmdroid)
     implementation(libs.open.location.code)
-    implementation(libs.google.maps.compose)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

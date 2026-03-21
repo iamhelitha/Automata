@@ -1,6 +1,8 @@
 package com.jayathu.automata.ui.screens
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -561,24 +563,52 @@ private fun GoogleMapsApiKeyInput(
             onDismissRequest = { showHelpDialog = false },
             title = { Text("How to get a Google Maps API key") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("1. Go to console.cloud.google.com")
-                    Text("2. Create a new project or select an existing one")
-                    Text("3. Link a billing account (required even for free tier, you won't be charged)")
-                    Text("4. Go to APIs & Services > Library")
-                    Text("5. Search for \"Maps SDK for Android\" and enable it")
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.verticalScroll(rememberScrollState())
+                ) {
                     Text(
-                        "Important: Enable \"Maps SDK for Android\" specifically, not \"Maps Static API\" or other Maps APIs. They are separate products.",
+                        "Create a project & API key",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text("1. Go to console.cloud.google.com")
+                    Text("2. Create a new project (or select an existing one)")
+                    Text("3. Go to Billing and link a billing account (required, but you get \$200/month free credit)")
+                    Text("4. Go to APIs & Services > Credentials")
+                    Text("5. Click + Create Credentials > API Key")
+                    Text("6. Copy the key and paste it here")
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Enable required APIs",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text("7. Go to APIs & Services > Library")
+                    Text("8. Search and enable: Maps JavaScript API")
+                    Text("9. Search and enable: Places API")
+                    Text(
+                        "Both are needed — Maps JavaScript API renders the map, Places API powers location search.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Configure API key restrictions",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text("10. Go to APIs & Services > Credentials and click your API key")
+                    Text("11. Under Application restrictions, select Don't restrict key (recommended for this app)")
+                    Text("12. Under API restrictions, select Restrict key and check only Maps JavaScript API and Places API")
+                    Text(
+                        "Do NOT set Application restrictions to \"Android apps\" — the map runs inside a WebView, which won't match Android app restrictions.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
-                    Text("6. Go to APIs & Services > Credentials")
-                    Text("7. Click \"Create Credentials\" > \"API Key\"")
-                    Text("8. Copy the key and paste it here")
-                    Text("9. When asked to restrict the key, you can tap \"Maybe later\"")
+
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        "Free tier: ~28,000 map loads/month (\$200 credit). It may take a few minutes for a new key to start working.",
+                        "Free tier: \$200/month credit covers ~28,000 map loads and ~70,000 place searches. Changes to key restrictions may take up to 5 minutes to take effect.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

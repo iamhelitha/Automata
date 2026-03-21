@@ -50,7 +50,12 @@ class RideOrchestrator(
 
         val pickup = config.pickupAddress
 
-        // Phase 0: Force-close both apps so they start from a clean state
+        // Phase 0a: Warm up both apps (launch briefly to trigger process creation)
+        if (config.enablePickMe && config.enableUber) {
+            steps.add(warmUpApps(config))
+        }
+
+        // Phase 0b: Force-close both apps so they start from a clean state
         steps.add(forceCloseApps(config))
 
         // Phase 1: Read prices from both apps
@@ -161,6 +166,35 @@ class RideOrchestrator(
     }
 
     /**
+     * Warm up the SECOND app by launching it briefly. This loads app code into
+     * the filesystem page cache so the subsequent launch is faster.
+     * Only the second app benefits — the first app cold-starts regardless.
+     * PickMe runs first, so we warm up Uber (and vice versa).
+     */
+    private fun warmUpApps(config: TaskConfig) = AutomationStep(
+        name = "Warm up second app",
+        waitCondition = { true },
+        timeoutMs = 8_000,
+        action = { _, _ ->
+            val service = AutomataAccessibilityService.instance.value
+            if (service != null) {
+                // PickMe runs first in the script, so warm up Uber (the second app)
+                // If only one app is enabled, this step is skipped entirely (see buildSteps)
+                val secondApp = if (config.enablePickMe) RideApp.UBER else RideApp.PICKME
+                Log.i(TAG, "Warming up ${secondApp.displayName} (runs second)")
+                AutomationEngine.launchApp(context, secondApp.packageName)
+                kotlinx.coroutines.delay(1500)
+                com.jayathu.automata.engine.ActionExecutor.pressHome(service)
+                kotlinx.coroutines.delay(300)
+                Log.i(TAG, "${secondApp.displayName} warmed up, code cached in memory")
+                StepResult.Success
+            } else {
+                StepResult.Failure("Accessibility service not available")
+            }
+        }
+    )
+
+    /**
      * Force-close PickMe and Uber so they start fresh from their home screens.
      */
     private fun forceCloseApps(config: TaskConfig) = AutomationStep(
@@ -184,7 +218,7 @@ class RideOrchestrator(
         name = "Return to home screen",
         waitCondition = { true },
         timeoutMs = 3_000,
-        delayAfterMs = 1000,
+        delayAfterMs = 500,
         action = { _, _ ->
             val service = AutomataAccessibilityService.instance.value
             if (service != null) {
