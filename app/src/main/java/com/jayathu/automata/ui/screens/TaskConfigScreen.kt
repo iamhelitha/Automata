@@ -29,6 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -50,16 +51,26 @@ fun TaskConfigScreen(
     onDelete: (() -> Unit)?,
     onBack: () -> Unit
 ) {
-    // Compute effective initial values — picked value wins over existing config.
-    // Using the effective value as a rememberSaveable input key forces reinitialization
-    // when a map-picked value arrives, instead of restoring stale saved state.
-    // Picked values are NOT consumed; they're cleaned up when the back stack entry pops.
-    val effectivePickup = pickedPickup ?: existingConfig?.pickupAddress ?: ""
-    val effectiveDestination = pickedDestination ?: existingConfig?.destinationAddress ?: ""
-
     var name by rememberSaveable { mutableStateOf(existingConfig?.name ?: "") }
-    var pickup by rememberSaveable(effectivePickup) { mutableStateOf(effectivePickup) }
-    var destination by rememberSaveable(effectiveDestination) { mutableStateOf(effectiveDestination) }
+    var pickup by rememberSaveable { mutableStateOf(existingConfig?.pickupAddress ?: "") }
+    var destination by rememberSaveable { mutableStateOf(existingConfig?.destinationAddress ?: "") }
+
+    // Apply map-picked values when they arrive. The tracking variable prevents
+    // re-applying a stale pick when the composable re-enters after navigation.
+    val lastAppliedPickup = rememberSaveable { mutableStateOf<String?>(null) }
+    val lastAppliedDest = rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(pickedPickup) {
+        if (pickedPickup != null && pickedPickup != lastAppliedPickup.value) {
+            pickup = pickedPickup
+            lastAppliedPickup.value = pickedPickup
+        }
+    }
+    LaunchedEffect(pickedDestination) {
+        if (pickedDestination != null && pickedDestination != lastAppliedDest.value) {
+            destination = pickedDestination
+            lastAppliedDest.value = pickedDestination
+        }
+    }
     var rideType by rememberSaveable { mutableStateOf(existingConfig?.rideType ?: "Bike") }
     var enablePickMe by rememberSaveable { mutableStateOf(existingConfig?.enablePickMe ?: true) }
     var enableUber by rememberSaveable { mutableStateOf(existingConfig?.enableUber ?: true) }
