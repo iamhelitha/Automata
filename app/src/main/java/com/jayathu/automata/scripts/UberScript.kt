@@ -113,17 +113,21 @@ object UberScript {
         // Uber may or may not remember the ride options screen after returnToHome.
         // ensureOnRideOptionsScreen handles both cases: if already on ride options, it skips;
         // if on home screen, it navigates through the full search flow.
+        val mapped = mapRideType(rideType)
         val steps = mutableListOf(
             launchApp(context),
             ensureOnRideOptionsScreen(destination, pickupAddress),
-            selectRideType(mapRideType(rideType)),
-            tapChooseRide(mapRideType(rideType)),
-            handleIntercityTripPrompt(),
-            handleDepartureTimePrompt(),
-            tapBookIntercityTrip(),
-            handleForMePrompt(),
-            tapConfirmPickup()
+            selectRideType(mapped),
+            tapChooseRide(mapped)
         )
+        // Uber only shows the intercity flow (trip type, departure time, book) for Zip
+        if (mapped == ZIP_TEXT) {
+            steps.add(handleIntercityTripPrompt())
+            steps.add(handleDepartureTimePrompt())
+            steps.add(tapBookIntercityTrip())
+        }
+        steps.add(handleForMePrompt())
+        steps.add(tapConfirmPickup())
         if (autoBypassSomeoneElse) {
             steps.add(handleNotForSomeoneElsePrompt())
         }
@@ -137,16 +141,20 @@ object UberScript {
     fun buildQuickBookingSteps(context: Context, rideType: String, destination: String = "", autoBypassSomeoneElse: Boolean = true): List<AutomationStep> {
         // resumeApp preserves app state (ride options screen with correct destination),
         // so no need to verify destination — just select ride type and book.
+        val mapped = mapRideType(rideType)
         val steps = mutableListOf(
             resumeApp(context),
-            selectRideType(mapRideType(rideType)),
-            tapChooseRide(mapRideType(rideType)),
-            handleIntercityTripPrompt(),
-            handleDepartureTimePrompt(),
-            tapBookIntercityTrip(),
-            handleForMePrompt(),
-            tapConfirmPickup()
+            selectRideType(mapped),
+            tapChooseRide(mapped)
         )
+        // Uber only shows the intercity flow (trip type, departure time, book) for Zip
+        if (mapped == ZIP_TEXT) {
+            steps.add(handleIntercityTripPrompt())
+            steps.add(handleDepartureTimePrompt())
+            steps.add(tapBookIntercityTrip())
+        }
+        steps.add(handleForMePrompt())
+        steps.add(tapConfirmPickup())
         if (autoBypassSomeoneElse) {
             steps.add(handleNotForSomeoneElsePrompt())
         }

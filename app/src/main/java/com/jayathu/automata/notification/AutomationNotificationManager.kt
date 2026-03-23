@@ -27,6 +27,9 @@ class AutomationNotificationManager(private val context: Context) {
 
     init {
         createChannel()
+        // Dismiss any stale progress notification from a previous session
+        // (e.g., if the app was killed while automation was running)
+        dismiss()
     }
 
     private fun createChannel() {
